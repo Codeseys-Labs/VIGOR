@@ -2,173 +2,114 @@
 
 ## Roadmap Principles
 
-VIGOR should prove modality-agnostic value by supporting at least two very different modalities through the same runtime before expanding.
-
-Recommended initial pair:
-
-1. Photo editing, because editability and subjective aesthetic review are central.
-2. Agentic video generation, because it needs long-horizon multimodal planning, rendering, and scoring.
-
-CAD should follow once the runtime has mature provenance and safety gating.
+VIGOR proves modality-agnostic value by running distinct adapters through the same runtime. The current codebase now exercises text/toy, photo editing, standalone Manim video, first-slice CAD, and harness evaluation through shared VIGOR contracts.
 
 ## Phase 0: Documentation And Architecture
 
-Status: done for documentation baseline and Phase 1 runtime skeleton has shipped
+Status: **done**.
 
-Deliverables:
-
-| Deliverable | Status |
-| --- | --- |
-| Framework architecture | done |
-| Research synthesis | done |
-| ADRs | done |
-| Adoption plans | done |
-| Adapter templates | done |
-| Runtime schemas | done |
-| Scoring/adjudication policy | done |
-
-Exit criteria:
-
-1. Docs define the core loop, adapter contract, reviewer schema, and provenance model.
-2. At least three downstream adoption plans exist.
-3. Architecture decisions are captured in ADRs.
+Deliverables shipped: framework architecture, research synthesis, comparison document, readiness assessment, ADRs 0001-0011, adoption plans, runtime schemas, scoring/adjudication policy, templates, and commit-state documentation.
 
 ## Phase 1: Runtime Skeleton
 
-Status: **shipped.** Lives in `packages/vigor-core/` and `packages/vigor-runtime/`. Exit criteria met: the toy adapter (`vigor_runtime.toy_adapter.ToyTextAdapter`) runs end to end through the eight-stage loop, `RunArchive` persists `task.json`, `adapter_manifest.json`, `candidates/<cid>/{ir,compile_result,adjudication,patch_plan}.json`, `reviews/<rid>.json`, `errors/<eid>.json`, `frontier.json`, and `final/{export_bundle,provenance}.json`. Patch loop applies patches via `DomainAdapter.apply_patch` per ADR-0010.
-
-Deliverables:
+Status: **done**.
 
 | Deliverable | Status |
 | --- | --- |
-| `TaskSpec` | done (Pydantic v2, strict, camelCase aliases) |
-| `ArtifactIR` | done |
-| `CompileResult` | done |
-| `ReviewReport` | done |
-| `AdjudicationReport` | done |
-| `RunArchive` (filesystem) | done with path-traversal containment |
-| `DomainAdapter` / `AgentBackend` / `ToolBackend` interfaces | done (async, per ADR-0010) |
-| `Orchestrator` | done: catches `VigorError` + `Exception` at the boundary, runs reviewers in parallel via `asyncio.gather`, invokes `apply_patch`, writes frontier + provenance |
-| `EchoAgentBackend` + toy adapter | done |
+| `vigor-core` Pydantic schemas | done |
+| Async `DomainAdapter`, `AgentBackend`, `ToolBackend` interfaces | done |
+| `RunArchive` filesystem persistence with path containment | done |
+| Scoring, adjudication, and frontier selection | done |
+| `vigor-runtime` orchestrator | done |
+| Patch loop (`propose_patch` + `apply_patch`) | done |
+| Best-of-N from `Budgets.max_candidates` | done |
+| Echo backend + toy adapter | done |
 | CLI (`vigor demo`, `vigor version`) | done |
-| CI (ruff + format + mypy strict + pytest, Python 3.11 & 3.12) | done |
-
-Exit criteria (met):
-
-1. A toy adapter can generate, compile, review, patch, and export. ✓
-2. Run archive stores all intermediate state. ✓
-3. Loop stops by acceptance or budget. ✓
+| CI and quality gate | done |
 
 ## Phase 2: Photo Editing MVP
 
-Status: **partial — first slice shipped.** `packages/vigor-adapter-photo/` ships the canonical IR (`PhotoEditRecipeV1`), a pure-Python Pillow/NumPy preview renderer, a `HistogramCritic` (objective), JSON recipe export, and an XMP sidecar (Lightroom PV2012). Masks and VLM aesthetic critic remain deferred.
-
-Deliverables:
+Status: **done for deterministic MVP**.
 
 | Deliverable | Status |
 | --- | --- |
-| `photo_edit_recipe.v1` (global adjustments) | done |
-| Preview renderer (Pillow + NumPy) | done |
-| Basic mask support | deferred |
+| `photo_edit_recipe.v1` | done |
+| Global adjustments | done |
+| Local adjustment metadata | done |
+| Basic masks | done: sky heuristic, foreground gradient, subject/radial gradient |
+| Preview renderer | done: Pillow + NumPy, globals + local mask blending |
 | Histogram critic | done |
-| VLM aesthetic critic | deferred (needs provider + test photos) |
-| Lightroom XMP export (ProcessVersion=11.0) | done |
+| XMP export | done: Lightroom/ACR PV2012 global settings |
+| Mask PNG export | done |
+| VLM aesthetic critic | optional future enhancement; backend model reviewer path exists |
 
-Exit criteria:
+## Phase 3: Agentic Video MVP
 
-1. User can provide a photo and style prompt. ✓ (via `TaskSpec.references[0]`)
-2. System outputs preview, recipe, masks, review report, and provenance. ✓ for preview/recipe/report/provenance; masks deferred.
-3. At least one automatic patch improves a measured issue. In progress (the hint-based `_apply_objective_hint` demonstrates the loop; structured patches land with the mask slice).
+Status: **done for standalone Manim first slice; AIECF integration remains externally blocked**.
 
-## Phase 3: Agentic Video MVP (deferred)
-
-Status: not started. Deferred pending prerequisites C7 (GPU compute) and C8 (AIECF repo access) from `docs/readiness/implementation-readiness.md`. The video adapter is split into `vigor-adapter-video-manim` (standalone) and `vigor-adapter-video-aiecf` (integration).
-
-Planned deliverables once unblocked:
-
-| Deliverable | Description |
+| Deliverable | Status |
 | --- | --- |
-| `educational_video.v1` | Storyboard, narration, scene code schema |
-| Manim adapter | Compile scene IR to MP4 |
-| ffmpeg adapter | Assemble scenes and audio |
-| VLM scene critic | Structured pedagogical/visual critique |
-| Optional VideoScore2 adapter | Video quality/alignment/consistency scoring |
-| Continuity reviewer | Adjacent scene and full-video checks |
-
-Exit criteria:
-
-1. Scene-level loop can render, review, patch, and re-render.
-2. Full-video archive includes scene artifacts and final export.
-3. Hybrid scoring can store at least two reviewer outputs per video.
+| `manim_scene.v1` | done |
+| Standalone Manim adapter | done (`vigor-adapter-video-manim`) |
+| CLI command construction | done |
+| Test strategy without Manim in CI | done: injectable fake runner |
+| Basic MP4 artifact reviewer | done |
+| Real Manim subprocess guard | done: requires sandboxed runner or explicit unsafe opt-in |
+| AIECF wrapper | blocked pending concrete AIECF repo access and license |
+| VideoScore2 hard reviewer | blocked pending GPU or accepted shadow-mode path |
 
 ## Phase 4: Frontier And Search
 
-Deliverables:
+Status: **done for sequential best-of-N**.
 
-| Deliverable | Description |
+| Deliverable | Status |
 | --- | --- |
-| Best-of-N generation | Multiple candidate branches |
-| Frontier manager | Rank by quality, cost, editability, safety |
-| Candidate comparison UI or report | Show why candidate won |
-| Non-monotonic selection | Allow selecting non-final iteration |
-
-Exit criteria:
-
-1. Runtime can keep several candidates alive.
-2. Final artifact can be selected from any candidate, not only the last.
-3. Provenance records selection rule.
+| Best-of-N generation | done: runtime evaluates `Budgets.max_candidates` candidates |
+| Frontier manager | done |
+| Non-monotonic selection | done: final selected candidate can be non-first |
+| Parallel candidate scheduling | future performance optimization |
 
 ## Phase 5: CAD MVP
 
-Deliverables:
+Status: **done for OpenSCAD first slice**.
 
-| Deliverable | Description |
+| Deliverable | Status |
 | --- | --- |
-| `cad_parametric.v1` | Parametric feature schema |
-| CAD compiler | CadQuery, FreeCAD, or OpenSCAD adapter |
-| Geometry validator | Watertightness and validity checks |
-| Manufacturability reviewer | Wall thickness, overhangs, slicer report |
-| Simulation hook | FEM or simplified load checks |
-
-Exit criteria:
-
-1. Generate editable CAD IR from constraints.
-2. Compile to CAD and mesh outputs.
-3. Detect and patch one geometry/manufacturing failure.
-4. Export validation package.
+| `cad_parametric.v1` | done |
+| CAD compiler | done: deterministic OpenSCAD source generation |
+| Geometry/manufacturing validator | done: dimensions, wall thickness, hole margin, bbox, FDM warning |
+| Export validation package | done: `.scad` artifact + `cad_validation.json` |
+| Mesh/STL compilation | optional future enhancement requiring OpenSCAD/CadQuery/FreeCAD |
+| FEM/simulation | deferred to safety-critical later phase |
 
 ## Phase 6: Meta-Harness-Style Harness Optimization
 
-Deliverables:
+Status: **done for minimal evaluator; proposer/optimizer deferred**.
 
-| Deliverable | Description |
+| Deliverable | Status |
 | --- | --- |
-| Domain benchmark suites | Search, validation, and held-out tasks |
-| Harness candidate format | Prompt/adapters/reviewer/memory policy bundle |
-| Outer-loop evaluator | Runs benchmark tasks and scores harness variants |
-| Frontier tracking | Quality/cost/safety/editability Pareto frontiers |
+| Harness candidate schema | done |
+| Split manifest schema | done |
+| Candidate evaluator | done: runs existing VIGOR orchestrator over JSON `TaskSpec` files referenced by split manifests |
+| Aggregate report | done |
+| Promotion gates | documented, not automated |
+| Self-proposing code optimizer | future enhancement |
 
-Exit criteria:
+## Remaining External Blockers
 
-1. VIGOR can compare two harness versions over the same task set.
-2. Outer-loop changes are reviewed before promotion.
-3. Search, validation, and held-out evaluation roles are separate.
+| Item | Status | Required Input |
+| --- | --- | --- |
+| `vigor-adapter-video-aiecf` | blocked | concrete AIECF repo URL/access/license and pipeline verification |
+| VideoScore2 as hard scorer | blocked | GPU/model-serving decision |
+| VLM aesthetic critic | optional | provider credentials, model choice, licensed test photo corpus |
+| CAD mesh/FEM validation | deferred | CAD kernel choice, solver choice, material/load-case test corpus |
 
-Benchmark split definitions:
+## Current Quality Gate
 
-| Split | Use |
-| --- | --- |
-| Search | Used by agents or optimizers to propose harness changes |
-| Validation | Used to compare candidate harnesses before promotion |
-| Held-out test | Used only for final reporting or release qualification |
+Required before every commit:
 
-## Cross-Cutting Workstreams
-
-| Workstream | Need |
-| --- | --- |
-| Security | Sandbox tools, isolate renderers, scan secrets, restrict destructive actions |
-| Governance | Human approval for safety-critical domains |
-| Observability | Trace IDs, metrics, run dashboards, failure reports |
-| Storage | Large artifact lifecycle, privacy, retention |
-| UI | Candidate comparison, reviewer evidence, inline comments |
-| Evaluation | Human preference capture, calibration, benchmark splits |
+1. `uv run ruff check .`
+2. `uv run ruff format --check .`
+3. `uv run mypy`
+4. `uv run pytest`
+5. `uv run vigor demo --goal "Final verification" --runs-dir runs --task-id final_verify`

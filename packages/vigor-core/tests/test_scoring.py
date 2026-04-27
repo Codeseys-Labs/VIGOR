@@ -41,15 +41,17 @@ def _review(
     action: str = "accept",
     candidate: str = "cand_1",
 ) -> ReviewReport:
-    return ReviewReport(
-        review_id=f"rev_{reviewer_id}",
-        candidate_id=candidate,
-        reviewer_id=reviewer_id,
-        reviewer_type="objective_metric",
-        summary="synthetic",
-        scores=scores,
-        passed=passed,
-        recommended_action=action,  # type: ignore[arg-type]
+    return ReviewReport.model_validate(
+        {
+            "review_id": f"rev_{reviewer_id}",
+            "candidate_id": candidate,
+            "reviewer_id": reviewer_id,
+            "reviewer_type": "objective_metric",
+            "summary": "synthetic",
+            "scores": scores,
+            "passed": passed,
+            "recommended_action": action,
+        }
     )
 
 
@@ -98,6 +100,20 @@ def test_adjudicate_patches_on_min_failure() -> None:
     assert report.decision == "patch"
 
 
+def test_adjudicate_patches_on_mixed_failed_review() -> None:
+    policy = ScoringPolicy(policy_id="p")
+    inputs = AdjudicationInputs(
+        candidate_id="cand_1",
+        reviews=[
+            _review("good", {"quality": 1.0}, passed=True, action="accept"),
+            _review("bad", {"quality": 1.0}, passed=False, action="patch"),
+        ],
+        hard_gate_signals={},
+    )
+    report = adjudicate(inputs, policy, "adj_mixed")
+    assert report.decision == "patch"
+
+
 def test_adjudicate_branches_on_disagreement() -> None:
     policy = ScoringPolicy(policy_id="p", disagreement_threshold=0.1)
     inputs = AdjudicationInputs(
@@ -125,7 +141,7 @@ def test_adjudicate_escalates_on_reviewer_request() -> None:
     assert report.decision == "escalate"
 
 
-def test_frontier_selects_best_candidate() -> None:
+def test_frontier_selects_best_accepted_candidate() -> None:
     policy = ScoringPolicy(policy_id="p", weights={"quality": 1.0})
     inputs_a = AdjudicationInputs(
         candidate_id="cand_a",
@@ -145,3 +161,37 @@ def test_frontier_selects_best_candidate() -> None:
     assert best is not None
     assert best.candidate_id == "cand_b"
     assert best.rank == 1
+
+
+def test_frontier_does_not_select_patch_candidate_with_high_score() -> None:
+    policy = ScoringPolicy(policy_id="p", weights={"quality": 1.0})
+    patch_adj = adjudicate(
+        AdjudicationInputs(
+            candidate_id="needs_patch",
+            reviews=[
+                _review(
+                    "needs_patch",
+                    {"quality": 1.0},
+                    candidate="needs_patch",
+                    passed=False,
+                    action="patch",
+                )
+            ],
+            hard_gate_signals={},
+        ),
+        policy,
+        "adj_patch",
+    )
+    accept_adj = adjudicate(
+        AdjudicationInputs(
+            candidate_id="accepted",
+            reviews=[_review("accepted", {"quality": 0.2}, candidate="accepted")],
+            hard_gate_signals={},
+        ),
+        policy,
+        "adj_accept",
+    )
+    frontier = build_frontier("run_1", "frontier_1", [patch_adj, accept_adj], policy)
+    best = select_best(frontier)
+    assert best is not None
+    assert best.candidate_id == "accepted"

@@ -18,8 +18,18 @@ from vigor_core.interfaces import (
     PatchProposalRequest,
     ReviewRequest,
     ReviewResult,
+    RunContext,
 )
-from vigor_core.schemas import ArtifactIR, Budgets, PatchPlan, ReviewReport, TaskSpec
+from vigor_core.schemas import (
+    ArtifactIR,
+    Budgets,
+    CompileResult,
+    ExportBundle,
+    ObservableArtifact,
+    PatchPlan,
+    ReviewReport,
+    TaskSpec,
+)
 from vigor_core.scoring import ScoringPolicy
 from vigor_runtime.backends import EchoAgentBackend
 from vigor_runtime.orchestrator import Orchestrator
@@ -41,7 +51,12 @@ async def test_toy_adapter_accepts(tmp_path: Path) -> None:
     backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
     orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive)
 
-    task = TaskSpec(task_id="t_accept", goal="hello", modalities=["toy_text"])
+    task = TaskSpec(
+        task_id="t_accept",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
     result = await orchestrator.run(task)
 
     assert result.accepted is True
@@ -55,26 +70,19 @@ async def test_toy_adapter_accepts(tmp_path: Path) -> None:
     assert (run_dir / "final" / "export_bundle.json").exists()
     assert (run_dir / "final" / "provenance.json").exists()
 
-    # Candidate-level files land where expected.
     candidate_dirs = list((run_dir / "candidates").iterdir())
-    assert len(candidate_dirs) >= 1
+    assert len(candidate_dirs) == 1
     for cand_dir in candidate_dirs:
         assert (cand_dir / "ir.json").exists()
         assert (cand_dir / "compile_result.json").exists()
         assert (cand_dir / "adjudication.json").exists()
-        assert (cand_dir / "reviews").exists()
         assert any((cand_dir / "reviews").glob("*.json"))
 
-    # Provenance activities cover the full loop.
     activity_types = {a.type for a in result.provenance.activities}
     assert {"generation", "compile", "review", "adjudication", "export"} <= activity_types
 
 
 class _FailingReviewBackend(AgentBackend):
-    """Backend whose review is a strict critic: any text not containing 'GOOD'
-    fails. propose_patch requests the adapter append '!' until it passes.
-    """
-
     def __init__(self) -> None:
         self.propose_calls = 0
 
@@ -118,10 +126,6 @@ class _FailingReviewBackend(AgentBackend):
 
 
 class _ToyAdapterWithAppendPatch(ToyTextAdapter):
-    """Toy adapter variant that implements 'append 'GOOD'' as an apply_patch
-    operation so we can exercise the patch loop end to end.
-    """
-
     async def apply_patch(self, ir: ArtifactIR, patch: PatchPlan) -> ArtifactIR:
         text = ir.body.get("text", "")
         for objective in patch.objectives:
@@ -140,8 +144,6 @@ class _ToyAdapterWithAppendPatch(ToyTextAdapter):
 
 @pytest.mark.asyncio
 async def test_patch_loop_actually_applies_patches(tmp_path: Path) -> None:
-    """apply_patch must be invoked by the orchestrator and improve the IR."""
-
     archive = RunArchive(tmp_path)
     adapter = _ToyAdapterWithAppendPatch()
     backend = _FailingReviewBackend()
@@ -156,23 +158,139 @@ async def test_patch_loop_actually_applies_patches(tmp_path: Path) -> None:
         task_id="t_patch_loop",
         goal="require GOOD",
         modalities=["toy_text"],
-        budgets=Budgets(max_iterations=4),
+        budgets=Budgets(max_iterations=4, max_candidates=1),
     )
     result = await orchestrator.run(task)
 
-    assert result.accepted is True, "patch loop should converge"
-    assert backend.propose_calls >= 1, "backend.propose_patch must be invoked"
-
+    assert result.accepted is True
+    assert backend.propose_calls >= 1
     run_dir = archive.run_dir("t_patch_loop")
     candidate_dirs = sorted((run_dir / "candidates").iterdir())
-    # At least one candidate is a patched child (contains '_p' in candidate id).
     assert any("_p" in d.name for d in candidate_dirs), candidate_dirs
-    # A patch_plan.json was persisted at least once.
     assert any((d / "patch_plan.json").exists() for d in candidate_dirs)
+    assert "patch" in {a.type for a in result.provenance.activities}
 
-    # Provenance includes patch activity.
-    activity_types = {a.type for a in result.provenance.activities}
-    assert "patch" in activity_types
+
+class _RankedBackend(AgentBackend):
+    async def generate(self, request: GenerationRequest) -> GenerationResult:
+        rank = len(request.prior_candidates)
+        ir = ArtifactIR(
+            candidate_id=f"cand_{request.task.task_id}_{rank:04d}",
+            ir_type=request.plan.ir_type,
+            body={"text": f"candidate {rank}", "rank": rank},
+        )
+        return GenerationResult(ir=ir)
+
+    async def review(self, request: ReviewRequest) -> ReviewResult:
+        rank = float(request.ir.body["rank"])
+        return ReviewResult(
+            report=ReviewReport(
+                review_id=f"rev_rank_{request.ir.candidate_id}",
+                candidate_id=request.ir.candidate_id,
+                artifact_id=request.artifact.artifact_id,
+                reviewer_id=request.reviewer_id,
+                reviewer_type="model_critic",
+                summary=f"rank score {rank}",
+                scores={"quality": rank / 2.0},
+                passed=True,
+            )
+        )
+
+    async def propose_patch(self, request: PatchProposalRequest) -> PatchProposal:
+        return PatchProposal(
+            patch=PatchPlan(
+                patch_id=f"patch_{request.ir.candidate_id}",
+                source_candidate_id=request.ir.candidate_id,
+                objectives=["noop"],
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_best_of_n_uses_max_candidates_and_selects_best(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=_RankedBackend(),
+        archive=archive,
+        policy=ScoringPolicy(policy_id="best", weights={"quality": 1.0}),
+    )
+    task = TaskSpec(
+        task_id="t_best_of_n",
+        goal="pick best",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=3),
+    )
+    result = await orchestrator.run(task)
+    assert result.accepted is True
+    assert result.selected_candidate_id == "cand_t_best_of_n_0002"
+    candidate_dirs = sorted((archive.run_dir("t_best_of_n") / "candidates").iterdir())
+    assert [d.name for d in candidate_dirs] == [
+        "cand_t_best_of_n_0000",
+        "cand_t_best_of_n_0001",
+        "cand_t_best_of_n_0002",
+    ]
+
+
+class _InvalidFirstBackend(_RankedBackend):
+    async def generate(self, request: GenerationRequest) -> GenerationResult:
+        result = await super().generate(request)
+        if not request.prior_candidates:
+            result.ir.body = {"wrong": "shape"}
+        return result
+
+
+@pytest.mark.asyncio
+async def test_best_of_n_continues_after_invalid_candidate(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=_InvalidFirstBackend(),
+        archive=archive,
+        policy=ScoringPolicy(
+            policy_id="best", weights={"quality": 1.0}, disagreement_threshold=1.0
+        ),
+    )
+    task = TaskSpec(
+        task_id="t_invalid_best_of_n",
+        goal="pick valid",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=2),
+    )
+    result = await orchestrator.run(task)
+    assert result.accepted is True
+    assert result.selected_candidate_id == "cand_t_invalid_best_of_n_0001"
+
+
+class _ExportFailAdapter(ToyTextAdapter):
+    async def export(
+        self,
+        ir: ArtifactIR,
+        artifact: ObservableArtifact,
+        context: RunContext,
+    ) -> ExportBundle:
+        raise VigorError("export boom", kind="export_error")
+
+
+@pytest.mark.asyncio
+async def test_export_failure_is_not_accepted(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=_ExportFailAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    task = TaskSpec(
+        task_id="t_export_fail",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    result = await orchestrator.run(task)
+    assert result.accepted is False
+    assert result.stop_reason == "failed"
+    assert result.export_bundle is None
+    assert not (archive.run_dir("t_export_fail") / "final" / "export_bundle.json").exists()
 
 
 @pytest.mark.asyncio
@@ -187,25 +305,20 @@ async def test_toy_adapter_fails_when_text_empty(tmp_path: Path) -> None:
         task_id="t_empty",
         goal="",
         modalities=["toy_text"],
-        budgets=Budgets(max_iterations=2),
+        budgets=Budgets(max_iterations=2, max_candidates=1),
     )
     result = await orchestrator.run(task)
-
-    # The echo backend proposes a no-op patch and adapter cannot improve the
-    # empty seed, so the run exhausts budget without acceptance.
     assert result.accepted is False
     assert result.stop_reason in {"budget_exhausted", "failed"}
 
 
 class _RaisingCompileAdapter(ToyTextAdapter):
-    async def compile(self, ir, context):  # type: ignore[override,no-untyped-def]
+    async def compile(self, ir: ArtifactIR, context: RunContext) -> CompileResult:
         raise VigorError("boom", kind="compile_error", retryable=False)
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_converts_compile_exception_to_failure(
-    tmp_path: Path,
-) -> None:
+async def test_orchestrator_converts_compile_exception_to_failure(tmp_path: Path) -> None:
     archive = RunArchive(tmp_path)
     adapter = _RaisingCompileAdapter()
     backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
@@ -215,16 +328,14 @@ async def test_orchestrator_converts_compile_exception_to_failure(
         task_id="t_compile_error",
         goal="hello",
         modalities=["toy_text"],
-        budgets=Budgets(max_iterations=1),
+        budgets=Budgets(max_iterations=1, max_candidates=1),
     )
     result = await orchestrator.run(task)
 
     assert result.accepted is False
     assert result.stop_reason == "failed"
-
-    # Compile result records the structured error.
     cand_dir = next((archive.run_dir("t_compile_error") / "candidates").iterdir())
     compile_result_json = json.loads((cand_dir / "compile_result.json").read_text())
     assert compile_result_json["status"] == "failure"
-    assert compile_result_json["errors"], "compile errors must be persisted"
+    assert compile_result_json["errors"]
     assert compile_result_json["errors"][0]["type"] == "compile_error"

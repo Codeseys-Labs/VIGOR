@@ -11,14 +11,6 @@ license = { file = "LICENSE" }
 authors = [{ name = "The VIGOR Authors" }]
 keywords = ["agent", "generate-compile-review", "llm", "orchestration", "vigor"]
 
-dependencies = [
-  "vigor-core",
-  "vigor-runtime",
-  "vigor-backend-strands",
-  "vigor-backend-claude-agent-sdk",
-  "vigor-adapter-photo",
-]
-
 [dependency-groups]
 dev = [
   "pytest>=8",
@@ -41,6 +33,9 @@ vigor-runtime = { workspace = true }
 vigor-backend-strands = { workspace = true }
 vigor-backend-claude-agent-sdk = { workspace = true }
 vigor-adapter-photo = { workspace = true }
+vigor-adapter-video-manim = { workspace = true }
+vigor-adapter-cad = { workspace = true }
+vigor-harness = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["packages", "examples"]
@@ -51,10 +46,8 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 filterwarnings = [
   "error",
-  # Known pytest-asyncio event-loop shutdown noise under asyncio_mode=auto.
   "ignore::ResourceWarning",
   "ignore::pytest.PytestUnraisableExceptionWarning",
-  # stdlib path edge.
   "ignore::DeprecationWarning:pathlib.*",
 ]
 
@@ -73,6 +66,9 @@ mypy_path = [
   "packages/vigor-backend-strands/src",
   "packages/vigor-backend-claude-agent-sdk/src",
   "packages/vigor-adapter-photo/src",
+  "packages/vigor-adapter-video-manim/src",
+  "packages/vigor-adapter-cad/src",
+  "packages/vigor-harness/src",
 ]
 packages = [
   "vigor_core",
@@ -80,6 +76,9 @@ packages = [
   "vigor_backend_strands",
   "vigor_backend_claude_agent_sdk",
   "vigor_adapter_photo",
+  "vigor_adapter_video_manim",
+  "vigor_adapter_cad",
+  "vigor_harness",
 ]
 
 [[tool.mypy.overrides]]

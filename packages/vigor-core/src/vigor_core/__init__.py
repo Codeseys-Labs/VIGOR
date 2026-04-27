@@ -1,13 +1,4 @@
-"""VIGOR core package.
-
-Public API:
-
-* Schemas for tasks, IRs, compile results, reviews, patches, frontiers, provenance.
-* Abstract interfaces for domain adapters, agent backends, and tool backends.
-* Run archive implementation (filesystem-backed).
-* Scoring normalization and adjudication policy.
-* Frontier selection and best-of-N helpers.
-"""
+"""VIGOR core package."""
 
 from vigor_core.archive import RunArchive
 from vigor_core.errors import (
@@ -35,13 +26,22 @@ from vigor_core.interfaces import (
     ToolResult,
     ValidationReport,
 )
+from vigor_core.registry import (
+    export_json_schema,
+    get_ir_model,
+    register_ir,
+    registered_ir_versions,
+    validate_ir_body,
+)
 from vigor_core.schemas import (
+    ID_PATTERN,
     AdapterManifest,
     AdjudicationReport,
     ArtifactIR,
     Budgets,
     CompileResult,
     Constraint,
+    Decision,
     ExportBundle,
     ExportEntry,
     Finding,
@@ -78,6 +78,7 @@ from vigor_core.util import (
 )
 
 __all__ = [
+    "ID_PATTERN",
     "AdapterContractError",
     "AdapterManifest",
     "AdjudicationInputs",
@@ -89,6 +90,7 @@ __all__ = [
     "CompileError",
     "CompileResult",
     "Constraint",
+    "Decision",
     "DomainAdapter",
     "ExportBundle",
     "ExportEntry",
@@ -125,7 +127,11 @@ __all__ = [
     "VigorRuntimeError",
     "adjudicate",
     "build_frontier",
+    "export_json_schema",
+    "get_ir_model",
     "normalize_score",
+    "register_ir",
+    "registered_ir_versions",
     "safe_relative",
     "select_best",
     "sha256_bytes",
@@ -133,6 +139,7 @@ __all__ = [
     "sha256_text",
     "stable_json",
     "utcnow_iso",
+    "validate_ir_body",
 ]
 
 __version__ = "0.1.0"

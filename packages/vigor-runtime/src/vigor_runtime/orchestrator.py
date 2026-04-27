@@ -1,23 +1,8 @@
 """VIGOR async orchestrator.
 
-Runs the eight-stage generate-compile-review-adjudicate-patch loop described
-in ``docs/vigor-framework.md``:
-
-    route -> plan -> generate -> compile -> review -> adjudicate -> patch -> finalize
-
-Key contracts:
-
-* Adapters raise ``VigorError`` subclasses on structured failure. The
-  orchestrator catches ``VigorError`` *and* other ``Exception`` types at the
-  boundary and records a ``RuntimeErrorRecord`` plus a failure
-  ``AdjudicationReport`` instead of crashing.
-* After a ``patch`` decision, the backend proposes a ``PatchPlan`` and the
-  **adapter** applies it via ``apply_patch``. The patched IR is validated,
-  archived, and fed into the next iteration (the generator is only called on
-  the very first iteration unless the patched IR fails validation).
-* A successful run writes a ``final/`` directory with ``export_bundle.json``
-  and ``provenance.json``. A failed run writes ``errors/`` plus the partial
-  frontier so the archive is still replay-able.
+Runs the generate-compile-review-adjudicate-patch loop described in
+``docs/vigor-framework.md``. The runtime supports patch refinement and
+best-of-N candidate evaluation.
 """
 
 from __future__ import annotations
@@ -29,12 +14,13 @@ import uuid
 from dataclasses import dataclass
 
 from vigor_core.archive import RunArchive
-from vigor_core.errors import AdapterContractError, VigorError
+from vigor_core.errors import VigorError
 from vigor_core.interfaces import (
     AgentBackend,
     DomainAdapter,
     GenerationRequest,
     PatchProposalRequest,
+    RepresentationPlan,
     ReviewRequest,
     RunContext,
 )
@@ -59,6 +45,15 @@ from vigor_core.scoring import (
     select_best,
 )
 from vigor_core.util import utcnow_iso
+
+
+@dataclass(slots=True)
+class CandidateOutcome:
+    ir: ArtifactIR
+    compile_result: CompileResult
+    artifact: ObservableArtifact | None
+    reviews: list[ReviewReport]
+    adjudication: AdjudicationReport
 
 
 @dataclass(slots=True)
@@ -103,11 +98,8 @@ class Orchestrator:
         try:
             manifest = await self._adapter.describe_capabilities()
             self._archive.write_manifest(run_id, manifest)
-
             context = RunContext(
-                run_id=run_id,
-                run_dir=str(self._archive.run_dir(run_id)),
-                task=task,
+                run_id=run_id, run_dir=str(self._archive.run_dir(run_id)), task=task
             )
             plan = await self._adapter.plan_representation(task)
             prior: list[ArtifactIR] = []
@@ -119,132 +111,59 @@ class Orchestrator:
                     stop_reason = "budget_exhausted"
                     break
 
-                # Stage 1: generate (or reuse patched IR from previous iteration).
-                if current_ir is None:
-                    gen_result = await self._backend.generate(
-                        GenerationRequest(task=task, plan=plan, prior_candidates=list(prior))
-                    )
-                    ir = gen_result.ir
-                    activities.append(
-                        ProvenanceActivity(
-                            activity_id=f"generate_{ir.candidate_id}",
-                            type="generation",
-                            agent="backend",
-                        )
-                    )
-                else:
-                    ir = current_ir
-                    current_ir = None  # consumed
+                candidates = await self._candidate_batch(task, plan, prior, current_ir, activities)
+                current_ir = None
+                outcomes: list[CandidateOutcome] = []
+                for ir in candidates:
+                    outcome = await self._evaluate_candidate(ir, context, activities)
+                    outcomes.append(outcome)
+                    adjudications.append(outcome.adjudication)
+                    prior.append(ir)
+                    last_candidate_id = ir.candidate_id
 
-                validation = await self._adapter.validate_ir(ir)
-                if not validation.ok:
-                    raise AdapterContractError(
-                        "generated IR failed adapter validation: " + "; ".join(validation.errors)
+                accepted_outcome = self._select_accepted_outcome(outcomes)
+                if accepted_outcome is not None:
+                    assert accepted_outcome.artifact is not None
+                    export = await self._safe_export(
+                        accepted_outcome.ir, accepted_outcome.artifact, context
                     )
-                self._archive.write_ir(run_id, ir)
-                prior.append(ir)
-                last_candidate_id = ir.candidate_id
-
-                # Stage 2: compile.
-                compile_result = await self._safe_compile(ir, context)
-                self._archive.write_compile_result(run_id, compile_result)
-                activities.append(
-                    ProvenanceActivity(
-                        activity_id=compile_result.compile_id,
-                        type="compile",
-                        tool_id=compile_result.tool_id,
-                    )
-                )
-
-                if compile_result.status != "success" or not compile_result.outputs:
-                    adj = self._failure_adjudication(
-                        ir.candidate_id,
-                        "compile failed: " + "; ".join(e.message for e in compile_result.errors)
-                        if compile_result.errors
-                        else "compile failed",
-                    )
-                    self._archive.write_adjudication(run_id, adj)
-                    adjudications.append(adj)
-                    stop_reason = "failed"
-                    break
-
-                primary_artifact = compile_result.outputs[0]
-
-                # Stage 3: review.
-                reviews = await self._run_reviewers(
-                    ir=ir,
-                    artifact=primary_artifact,
-                    context=context,
-                    compile_result=compile_result,
-                )
-                for review in reviews:
-                    self._archive.write_review(run_id, review)
-                    activities.append(
-                        ProvenanceActivity(
-                            activity_id=review.review_id,
-                            type="review",
-                            reviewer_id=review.reviewer_id,
-                        )
-                    )
-
-                # Stage 4: adjudicate.
-                adj = adjudicate(
-                    AdjudicationInputs(
-                        candidate_id=ir.candidate_id,
-                        reviews=reviews,
-                        hard_gate_signals={
-                            "compile_success": True,
-                            "render_success": True,
-                        },
-                    ),
-                    self._policy,
-                    f"adj_{ir.candidate_id}",
-                )
-                self._archive.write_adjudication(run_id, adj)
-                adjudications.append(adj)
-                activities.append(
-                    ProvenanceActivity(
-                        activity_id=adj.adjudication_id,
-                        type="adjudication",
-                    )
-                )
-
-                if adj.decision == "accept":
-                    accepted = True
-                    last_export = await self._safe_export(ir, primary_artifact, context)
-                    if last_export is not None:
+                    if export is None:
+                        accepted = False
+                        stop_reason = "failed"
+                    else:
+                        accepted = True
+                        last_export = export
+                        last_candidate_id = accepted_outcome.ir.candidate_id
                         activities.append(
-                            ProvenanceActivity(
-                                activity_id=last_export.export_id,
-                                type="export",
-                            )
+                            ProvenanceActivity(activity_id=export.export_id, type="export")
                         )
-                    stop_reason = "accepted"
-                    break
-                if adj.decision in {"fail", "escalate"}:
-                    stop_reason = "failed" if adj.decision == "fail" else "escalated"
+                        stop_reason = "accepted"
                     break
 
-                # Stage 5: patch (only when decision is patch/branch/pivot).
+                patch_source = self._select_patch_source(outcomes)
+                if patch_source is None:
+                    stop_reason = (
+                        "escalated"
+                        if any(out.adjudication.decision == "escalate" for out in outcomes)
+                        else "failed"
+                    )
+                    break
+
                 proposal = await self._backend.propose_patch(
-                    PatchProposalRequest(ir=ir, reviews=reviews, context=context)
+                    PatchProposalRequest(
+                        ir=patch_source.ir, reviews=patch_source.reviews, context=context
+                    )
                 )
                 self._archive.write_patch(run_id, proposal.patch)
                 activities.append(
-                    ProvenanceActivity(
-                        activity_id=proposal.patch.patch_id,
-                        type="patch",
-                    )
+                    ProvenanceActivity(activity_id=proposal.patch.patch_id, type="patch")
                 )
 
-                # Adapter deterministically applies the patch. The patched IR
-                # becomes the seed for the next iteration.
-                patched_ir = await self._adapter.apply_patch(ir, proposal.patch)
+                patched_ir = await self._adapter.apply_patch(patch_source.ir, proposal.patch)
                 patched_validation = await self._adapter.validate_ir(patched_ir)
                 if not patched_validation.ok:
-                    # Adapter produced an invalid patched IR. Record and stop.
                     fatal_error = RuntimeErrorRecord(
-                        error_id=f"err_patch_{ir.candidate_id}",
+                        error_id=f"err_patch_{patch_source.ir.candidate_id}",
                         type="adapter_contract",
                         severity="high",
                         message=(
@@ -288,7 +207,6 @@ class Orchestrator:
             with contextlib.suppress(Exception):
                 await self._backend.aclose()
 
-        # Finalize: frontier + provenance.
         frontier = build_frontier(
             run_id=run_id,
             frontier_id=f"frontier_{run_id}",
@@ -297,7 +215,9 @@ class Orchestrator:
         )
         self._archive.write_frontier(run_id, frontier)
         best = select_best(frontier)
-        selected_candidate_id = best.candidate_id if best is not None else None
+        selected_candidate_id = (
+            last_candidate_id if accepted else (best.candidate_id if best else None)
+        )
 
         provenance = ProvenanceRecord(
             provenance_id=f"prov_{run_id}_{uuid.uuid4().hex[:8]}",
@@ -323,9 +243,146 @@ class Orchestrator:
             provenance=provenance,
         )
 
-    async def _safe_compile(self, ir: ArtifactIR, context: RunContext) -> CompileResult:
-        """Run the adapter compile, converting raised errors to a failure result."""
+    async def _candidate_batch(
+        self,
+        task: TaskSpec,
+        plan: RepresentationPlan,
+        prior: list[ArtifactIR],
+        current_ir: ArtifactIR | None,
+        activities: list[ProvenanceActivity],
+    ) -> list[ArtifactIR]:
+        if current_ir is not None:
+            return [current_ir]
+        generated: list[ArtifactIR] = []
+        for _ in range(max(1, task.budgets.max_candidates)):
+            result = await self._backend.generate(
+                GenerationRequest(task=task, plan=plan, prior_candidates=[*prior, *generated])
+            )
+            generated.append(result.ir)
+            activities.append(
+                ProvenanceActivity(
+                    activity_id=f"generate_{result.ir.candidate_id}",
+                    type="generation",
+                    agent="backend",
+                )
+            )
+        return generated
 
+    async def _evaluate_candidate(
+        self,
+        ir: ArtifactIR,
+        context: RunContext,
+        activities: list[ProvenanceActivity],
+    ) -> CandidateOutcome:
+        validation = await self._adapter.validate_ir(ir)
+        if not validation.ok:
+            self._archive.write_ir(context.run_id, ir)
+            err = RuntimeErrorRecord(
+                error_id=f"err_validate_{ir.candidate_id}",
+                type="schema_validation",
+                severity="high",
+                message="; ".join(validation.errors),
+                retryable=False,
+            )
+            compile_result = CompileResult(
+                compile_id=f"compile_validate_{ir.candidate_id}",
+                candidate_id=ir.candidate_id,
+                tool_id="orchestrator.validate",
+                status="failure",
+                errors=[err],
+            )
+            self._archive.write_compile_result(context.run_id, compile_result)
+            adj = self._failure_adjudication(ir.candidate_id, err.message)
+            self._archive.write_adjudication(context.run_id, adj)
+            return CandidateOutcome(ir, compile_result, None, [], adj)
+
+        self._archive.write_ir(context.run_id, ir)
+        compile_result = await self._safe_compile(ir, context)
+        self._archive.write_compile_result(context.run_id, compile_result)
+        activities.append(
+            ProvenanceActivity(
+                activity_id=compile_result.compile_id,
+                type="compile",
+                tool_id=compile_result.tool_id,
+            )
+        )
+
+        if compile_result.status != "success" or not compile_result.outputs:
+            reason = (
+                "compile failed: " + "; ".join(e.message for e in compile_result.errors)
+                if compile_result.errors
+                else "compile failed"
+            )
+            adj = self._failure_adjudication(ir.candidate_id, reason)
+            self._archive.write_adjudication(context.run_id, adj)
+            return CandidateOutcome(ir, compile_result, None, [], adj)
+
+        artifact = compile_result.outputs[0]
+        reviews = await self._run_reviewers(
+            ir=ir,
+            artifact=artifact,
+            context=context,
+            compile_result=compile_result,
+        )
+        for review in reviews:
+            self._archive.write_review(context.run_id, review)
+            activities.append(
+                ProvenanceActivity(
+                    activity_id=review.review_id,
+                    type="review",
+                    reviewer_id=review.reviewer_id,
+                )
+            )
+
+        adj = adjudicate(
+            AdjudicationInputs(
+                candidate_id=ir.candidate_id,
+                reviews=reviews,
+                hard_gate_signals={"compile_success": True, "render_success": True},
+            ),
+            self._policy,
+            f"adj_{ir.candidate_id}",
+        )
+        self._archive.write_adjudication(context.run_id, adj)
+        activities.append(ProvenanceActivity(activity_id=adj.adjudication_id, type="adjudication"))
+        return CandidateOutcome(ir, compile_result, artifact, reviews, adj)
+
+    def _select_accepted_outcome(self, outcomes: list[CandidateOutcome]) -> CandidateOutcome | None:
+        accepted = [
+            outcome
+            for outcome in outcomes
+            if outcome.adjudication.decision == "accept" and outcome.artifact is not None
+        ]
+        if not accepted:
+            return None
+        return max(
+            accepted,
+            key=lambda outcome: (
+                outcome.adjudication.composite
+                if outcome.adjudication.composite is not None
+                else 0.0
+            ),
+        )
+
+    def _select_patch_source(self, outcomes: list[CandidateOutcome]) -> CandidateOutcome | None:
+        patchable = [
+            outcome
+            for outcome in outcomes
+            if outcome.artifact is not None
+            and outcome.adjudication.decision in {"patch", "branch", "pivot"}
+        ]
+        if not patchable:
+            return None
+        return max(
+            patchable,
+            key=lambda outcome: (
+                outcome.adjudication.composite
+                if outcome.adjudication.composite is not None
+                else 0.0
+            ),
+        )
+
+    async def _safe_compile(self, ir: ArtifactIR, context: RunContext) -> CompileResult:
         try:
             return await self._adapter.compile(ir, context)
         except VigorError as exc:
@@ -385,13 +442,6 @@ class Orchestrator:
         context: RunContext,
         compile_result: CompileResult,
     ) -> list[ReviewReport]:
-        """Run domain reviewers and the backend reviewer in parallel.
-
-        Any exception raised by either side is converted into a synthetic
-        `reviewer_error` report so adjudication always has something to work
-        with.
-        """
-
         async def adapter_reviews() -> list[ReviewReport]:
             try:
                 return await self._adapter.review(artifact, ir, context)
@@ -451,7 +501,7 @@ class Orchestrator:
         adapter_reviews_result, backend_reviews_result = await asyncio.gather(
             adapter_reviews(), backend_review()
         )
-        _ = compile_result  # reserved for future per-tool signals
+        _ = compile_result
         return adapter_reviews_result + backend_reviews_result
 
     def _failure_adjudication(self, candidate_id: str, reason: str) -> AdjudicationReport:

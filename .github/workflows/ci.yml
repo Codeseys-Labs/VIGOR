@@ -30,15 +30,18 @@ jobs:
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Install UV
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
         with:
           enable-cache: true
 
       - name: Set up Python ${{ matrix.python }}
         run: uv python install ${{ matrix.python }}
 
+      - name: Check lockfile
+        run: uv lock --locked
+
       - name: Sync workspace
-        run: uv sync --all-packages --all-extras
+        run: uv sync --locked --all-packages --all-extras
 
       - name: Ruff lint
         run: uv run ruff check .

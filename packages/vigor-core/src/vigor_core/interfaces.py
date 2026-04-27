@@ -7,8 +7,9 @@ and backends depend on `vigor-core` only.
 from __future__ import annotations
 
 import abc
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from vigor_core.schemas import (
     AdapterManifest,
@@ -21,10 +22,6 @@ from vigor_core.schemas import (
     TaskSpec,
     ToolManifest,
 )
-
-# ---------------------------------------------------------------------------
-# Runtime context
-# ---------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
@@ -57,13 +54,10 @@ class ValidationReport:
     warnings: list[str] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Agent backend request/response dataclasses
-# ---------------------------------------------------------------------------
-
-
 @dataclass(slots=True)
 class GenerationRequest:
+    """Request sent from runtime to an agent backend to generate candidate IR."""
+
     task: TaskSpec
     plan: RepresentationPlan
     prior_candidates: list[ArtifactIR] = field(default_factory=list)
@@ -72,6 +66,8 @@ class GenerationRequest:
 
 @dataclass(slots=True)
 class GenerationResult:
+    """Agent backend response containing candidate IR and optional trace data."""
+
     ir: ArtifactIR
     reasoning: str | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -79,6 +75,8 @@ class GenerationResult:
 
 @dataclass(slots=True)
 class ReviewRequest:
+    """Request sent to an agent backend to critique a compiled artifact."""
+
     ir: ArtifactIR
     artifact: ObservableArtifact
     context: RunContext
@@ -87,11 +85,15 @@ class ReviewRequest:
 
 @dataclass(slots=True)
 class ReviewResult:
+    """Agent backend review response."""
+
     report: ReviewReport
 
 
 @dataclass(slots=True)
 class PatchProposalRequest:
+    """Request sent to a backend to convert review evidence into a patch plan."""
+
     ir: ArtifactIR
     reviews: list[ReviewReport]
     context: RunContext
@@ -99,34 +101,24 @@ class PatchProposalRequest:
 
 @dataclass(slots=True)
 class PatchProposal:
+    """Backend-proposed patch plan plus optional rationale."""
+
     patch: PatchPlan
     rationale: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Tool backend result
-# ---------------------------------------------------------------------------
-
-
 @dataclass(slots=True)
 class ToolResult:
+    """Result from a tool backend call."""
+
     tool_id: str
-    status: str  # "success" | "failure" | "timeout"
+    status: Literal["success", "failure", "timeout"]
     output: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Interfaces
-# ---------------------------------------------------------------------------
-
-
 class AgentBackend(abc.ABC):
-    """Drives LLM / agent calls for generation, review, and patch proposal.
-
-    Backends never mutate artifact state directly. They propose changes; the
-    domain adapter applies them.
-    """
+    """Drives LLM / agent calls for generation, review, and patch proposal."""
 
     @abc.abstractmethod
     async def generate(self, request: GenerationRequest) -> GenerationResult: ...
@@ -183,3 +175,6 @@ class DomainAdapter(abc.ABC):
         artifact: ObservableArtifact,
         context: RunContext,
     ) -> ExportBundle: ...
+
+
+SeedIRFactory = Callable[[GenerationRequest], dict[str, Any]]

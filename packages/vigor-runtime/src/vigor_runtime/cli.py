@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import typer
 from vigor_core.archive import RunArchive
+from vigor_core.interfaces import GenerationRequest
 from vigor_core.schemas import TaskSpec
 
 from vigor_runtime.backends import EchoAgentBackend
@@ -49,7 +51,7 @@ def demo(
     archive = RunArchive(runs_dir)
     adapter = ToyTextAdapter()
 
-    def seed(request):  # type: ignore[no-untyped-def]
+    def seed(request: GenerationRequest) -> dict[str, Any]:
         return {"text": request.task.goal}
 
     backend = EchoAgentBackend(seed_ir_factory=seed)

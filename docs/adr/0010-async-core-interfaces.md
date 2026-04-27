@@ -16,7 +16,7 @@ VIGOR adopts async-first core interfaces. One authoritative signature set is pin
 
 ### `DomainAdapter`
 
-Adapters own the IR, the compiler, and the deterministic patch application.
+Adapters own the IR, compiler, reviewers, deterministic patch application, and exports.
 
 ```python
 class DomainAdapter(abc.ABC):
@@ -44,9 +44,14 @@ class DomainAdapter(abc.ABC):
 
     @abc.abstractmethod
     async def export(
-        self, ir: ArtifactIR, artifact: ObservableArtifact
+        self,
+        ir: ArtifactIR,
+        artifact: ObservableArtifact,
+        context: RunContext,
     ) -> ExportBundle: ...
 ```
+
+`export` receives `RunContext` because adapters often need the archive root/run directory to persist sidecars (for example XMP, mask PNGs, CAD validation JSON) and make exported URIs resolvable.
 
 ### `AgentBackend`
 
@@ -62,6 +67,8 @@ class AgentBackend(abc.ABC):
 
     @abc.abstractmethod
     async def propose_patch(self, request: PatchProposalRequest) -> PatchProposal: ...
+
+    async def aclose(self) -> None: ...
 ```
 
 ### `ToolBackend`
@@ -94,7 +101,7 @@ This is the only place in VIGOR where LLM outputs cross into authoritative artif
 ### Error Handling
 
 1. All methods raise `VigorError` or a subclass on structured failure.
-2. Runtime catches and records `VigorError` as a `RuntimeError` record in the run archive.
+2. Runtime catches and records `VigorError` as a `RuntimeErrorRecord` in the run archive.
 3. Uncaught exceptions become structured errors at the orchestrator boundary.
 
 ## Alternatives Considered

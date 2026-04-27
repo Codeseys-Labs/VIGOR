@@ -1,8 +1,4 @@
-"""Scoring normalization, adjudication policy, and frontier selection.
-
-This module implements the runtime logic described in
-`docs/scoring-adjudication.md`.
-"""
+"""Scoring normalization, adjudication policy, and frontier selection."""
 
 from __future__ import annotations
 
@@ -11,15 +7,12 @@ from dataclasses import dataclass, field
 
 from vigor_core.schemas import (
     AdjudicationReport,
+    Decision,
     Frontier,
     FrontierCandidate,
     ReviewReport,
 )
 from vigor_core.util import utcnow_iso
-
-# ---------------------------------------------------------------------------
-# Score normalization
-# ---------------------------------------------------------------------------
 
 
 def normalize_score(value: float, scale: str) -> float:
@@ -40,11 +33,6 @@ def normalize_score(value: float, scale: str) -> float:
     return max(0.0, min(1.0, result))
 
 
-# ---------------------------------------------------------------------------
-# Policy
-# ---------------------------------------------------------------------------
-
-
 @dataclass(slots=True)
 class ScoringPolicy:
     """Declarative scoring policy for a run."""
@@ -54,11 +42,7 @@ class ScoringPolicy:
     weights: dict[str, float] = field(default_factory=dict)
     minimums: dict[str, float] = field(default_factory=dict)
     disagreement_threshold: float = 0.20
-
-
-# ---------------------------------------------------------------------------
-# Adjudicator
-# ---------------------------------------------------------------------------
+    respect_review_passed: bool = True
 
 
 @dataclass(slots=True)
@@ -69,11 +53,10 @@ class AdjudicationInputs:
 
 
 _MIN_REVIEWERS_FOR_DISAGREEMENT = 2
+_REFINEMENT_PRIORITY: tuple[Decision, ...] = ("pivot", "branch", "patch")
 
 
 def _aggregate_scores(reviews: list[ReviewReport]) -> tuple[dict[str, float], float]:
-    """Collapse per-reviewer scores into a mean score per dimension and overall spread."""
-
     buckets: dict[str, list[float]] = {}
     for review in reviews:
         for dim, value in review.scores.items():
@@ -84,8 +67,7 @@ def _aggregate_scores(reviews: list[ReviewReport]) -> tuple[dict[str, float], fl
         for values in buckets.values()
         if len(values) >= _MIN_REVIEWERS_FOR_DISAGREEMENT
     ]
-    max_spread = max(disagreements) if disagreements else 0.0
-    return means, max_spread
+    return means, max(disagreements) if disagreements else 0.0
 
 
 def _composite(scores: dict[str, float], weights: dict[str, float]) -> float | None:
@@ -94,18 +76,21 @@ def _composite(scores: dict[str, float], weights: dict[str, float]) -> float | N
     total = sum(weights.values())
     if total == 0:
         return None
-    acc = 0.0
-    for dim, weight in weights.items():
-        acc += weight * scores.get(dim, 0.0)
-    return acc / total
+    return sum(weight * scores.get(dim, 0.0) for dim, weight in weights.items()) / total
 
 
 def _minimums_ok(scores: dict[str, float], minimums: dict[str, float]) -> list[str]:
-    failed: list[str] = []
-    for dim, floor in minimums.items():
-        if scores.get(dim, 0.0) < floor:
-            failed.append(dim)
-    return failed
+    return [dim for dim, floor in minimums.items() if scores.get(dim, 0.0) < floor]
+
+
+def _requested_refinement(reviews: list[ReviewReport]) -> Decision | None:
+    actions = {review.recommended_action for review in reviews}
+    for action in _REFINEMENT_PRIORITY:
+        if action in actions:
+            return action
+    if any(not review.passed for review in reviews):
+        return "patch"
+    return None
 
 
 def adjudicate(
@@ -119,32 +104,39 @@ def adjudicate(
         gate for gate in policy.hard_gates if not inputs.hard_gate_signals.get(gate, False)
     ]
     hard_gate_passed = not hard_failures
-
     normalized, disagreement = _aggregate_scores(inputs.reviews)
     composite = _composite(normalized, policy.weights)
     min_failures = _minimums_ok(normalized, policy.minimums)
+    refinement = _requested_refinement(inputs.reviews) if policy.respect_review_passed else None
 
-    decision: str
+    decision: Decision
     reason: str
 
     if not hard_gate_passed:
         decision = "fail"
         reason = f"hard gate failure: {', '.join(hard_failures)}"
-    elif min_failures:
-        decision = "patch"
-        reason = f"score below minimum for: {', '.join(min_failures)}"
-    elif disagreement > policy.disagreement_threshold:
-        decision = "branch"
-        reason = f"reviewer disagreement {disagreement:.2f} above threshold"
     elif any(r.recommended_action == "escalate" for r in inputs.reviews):
         decision = "escalate"
         reason = "at least one reviewer requested escalation"
+    elif any(r.recommended_action == "fail" for r in inputs.reviews):
+        decision = "fail"
+        reason = "at least one reviewer requested failure"
+    elif min_failures:
+        decision = "patch"
+        reason = f"score below minimum for: {', '.join(min_failures)}"
+    elif refinement is not None:
+        decision = refinement
+        reason = f"reviewer requested {refinement} or reported failed status"
+    elif disagreement > policy.disagreement_threshold:
+        decision = "branch"
+        reason = f"reviewer disagreement {disagreement:.2f} above threshold"
     else:
         decision = "accept"
-        if composite is not None:
-            reason = f"passes gates and minimums; composite={composite:.2f}"
-        else:
-            reason = "passes gates and minimums"
+        reason = (
+            f"passes gates and minimums; composite={composite:.2f}"
+            if composite is not None
+            else "passes gates and minimums"
+        )
 
     return AdjudicationReport(
         adjudication_id=adjudication_id,
@@ -155,16 +147,11 @@ def adjudicate(
         normalized_scores=normalized,
         composite=composite,
         reviewer_disagreement=disagreement,
-        decision=decision,  # type: ignore[arg-type]
+        decision=decision,
         basis=[r.review_id for r in inputs.reviews],
         selection_reason=reason,
         residual_risks=min_failures,
     )
-
-
-# ---------------------------------------------------------------------------
-# Frontier
-# ---------------------------------------------------------------------------
 
 
 def build_frontier(
@@ -173,34 +160,37 @@ def build_frontier(
     adjudications: Iterable[AdjudicationReport],
     policy: ScoringPolicy,
 ) -> Frontier:
-    """Rank candidates for a run using composite scores."""
+    """Rank candidates. Only accepted candidates are selectable."""
 
     scored: list[FrontierCandidate] = []
     for adj in adjudications:
-        hard_gate = adj.hard_gate_passed
+        selectable = adj.hard_gate_passed and adj.decision == "accept"
+        rejected = adj.decision in {"fail", "escalate"} or not adj.hard_gate_passed
         scored.append(
             FrontierCandidate(
                 candidate_id=adj.candidate_id,
-                status="kept" if hard_gate else "rejected",
+                status="kept" if not rejected else "rejected",
+                decision=adj.decision,
                 scores=dict(adj.normalized_scores)
                 | ({"composite": adj.composite} if adj.composite is not None else {}),
-                hard_gate_passed=hard_gate,
+                hard_gate_passed=adj.hard_gate_passed,
                 rank=None,
-                selection_reason=None,
+                selection_reason=adj.selection_reason,
             )
         )
+        if not selectable:
+            scored[-1].scores.setdefault("composite", 0.0)
 
-    # Sort by hard_gate_passed desc, then composite desc.
     def sort_key(candidate: FrontierCandidate) -> tuple[int, float]:
-        composite = candidate.scores.get("composite", 0.0)
-        return (0 if candidate.hard_gate_passed else 1, -composite)
+        selectable = candidate.decision == "accept" and candidate.hard_gate_passed
+        return (0 if selectable else 1, -candidate.scores.get("composite", 0.0))
 
     scored.sort(key=sort_key)
     for idx, candidate in enumerate(scored):
         candidate.rank = idx + 1
-        if idx == 0 and candidate.hard_gate_passed:
+        if idx == 0 and candidate.decision == "accept" and candidate.hard_gate_passed:
             candidate.status = "selected"
-            candidate.selection_reason = "top-ranked candidate passing hard gates"
+            candidate.selection_reason = "top-ranked accepted candidate passing hard gates"
 
     return Frontier(
         frontier_id=frontier_id,
@@ -211,8 +201,6 @@ def build_frontier(
 
 
 def select_best(frontier: Frontier) -> FrontierCandidate | None:
-    """Return the selected candidate, or None if nothing passes hard gates."""
-
     for candidate in frontier.candidates:
         if candidate.status == "selected":
             return candidate

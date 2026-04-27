@@ -8,20 +8,13 @@ Date: 2026-04-26
 
 VIGOR needs to support downstream projects such as agentic video generation, CAD, photo editing, Blender/3D, UI design, code, and other artifact-generation domains.
 
-There are two tempting but incomplete implementation paths:
-
-1. Keep VIGOR as a set of example projects such as `agentic-blender`, `agentic-cad`, and `agentic-photo-editing`.
-2. Build VIGOR directly on one agent framework such as Strands Agents or the Claude Agent SDK.
-
-Examples alone would fragment the architecture and duplicate schemas, scoring, provenance, and review policies. Hard-coupling to one agent SDK would make VIGOR less portable and would confuse VIGOR's artifact contracts with one framework's agent runtime concepts.
-
-Strands and Claude Agent SDK are both useful. Strands provides multi-provider agents, tool schemas, MCP integration, graph/swarm multi-agent patterns, session persistence, observability, and A2A support. Claude Agent SDK provides Claude Code-powered custom agents with tool access, MCP integration, permissions, hooks, checkpointing, cost/usage tracking, OpenTelemetry, and deployment guidance.
+Examples alone would fragment schemas, scoring, provenance, and review policies. Hard-coupling VIGOR to a single agent SDK would make the framework less portable and confuse VIGOR's artifact contracts with one runtime's agent concepts.
 
 ## Decision
 
-VIGOR will be packaged as an **SDK-agnostic core library** with optional agent backends and domain adapters.
+VIGOR is packaged as an **SDK-agnostic core library** with optional agent backends and domain adapters.
 
-The package family should be:
+Current package family:
 
 ```text
 vigor-core
@@ -29,10 +22,13 @@ vigor-runtime
 vigor-backend-strands
 vigor-backend-claude-agent-sdk
 vigor-adapter-photo
-vigor-adapter-video-aiecf
+vigor-adapter-video-manim
 vigor-adapter-cad
+vigor-harness
 examples/
 ```
+
+Future compatibility packages can be added, such as `vigor-adapter-video-aiecf`, once external access and assumptions are verified.
 
 The VIGOR core owns:
 
@@ -67,47 +63,22 @@ Domain adapters own:
 | Monolithic all-in-one VIGOR package | Creates dependency sprawl across video, CAD, photo, browser, and model tooling. |
 | Strands-only implementation | Strong general backend, but would lock VIGOR to Strands runtime concepts. |
 | Claude Agent SDK-only implementation | Strong Claude-native backend, but would lock VIGOR to Claude Code concepts and model/provider choices. |
-| Custom full agent SDK | Unnecessary; VIGOR should define artifact-runtime contracts, not recreate every agent framework feature. |
+| Custom full agent SDK | Unnecessary; VIGOR defines artifact-runtime contracts, not every agent framework feature. |
 
 ## Consequences
 
 Positive:
 
 1. VIGOR can be imported as a module by downstream projects.
-2. Domain projects can share schemas, scoring, provenance, and review logic.
+2. Domain projects share schemas, scoring, provenance, and review logic.
 3. Strands and Claude Agent SDK can both be used where they fit.
-4. New backends can be added without changing adapters.
-5. Reference examples remain useful without becoming one-off forks.
+4. Reference examples remain useful without becoming one-off forks.
 
 Negative:
 
-1. Requires more careful interface design upfront.
+1. Requires careful interface design.
 2. Optional backend feature parity must be managed.
 3. Documentation must distinguish VIGOR core concepts from backend-specific concepts.
-
-## Implementation Notes
-
-First implementation sequence:
-
-1. Build `vigor-core` with pure schemas, archive, scoring, and adapter interfaces.
-2. Build a minimal `vigor-runtime` that can run a toy adapter without any external agent SDK.
-3. Build `vigor-backend-strands` as the first general backend.
-4. Build `vigor-backend-claude-agent-sdk` for coding-heavy and Claude-native workflows.
-5. Build `vigor-adapter-photo` and `vigor-adapter-video-aiecf` as first real adapters.
-6. Keep `agentic-photo-editing`, `agentic-video`, and `agentic-cad` as examples powered by shared packages.
-
-The core interface should be small:
-
-```python
-class AgentBackend:
-    async def generate(self, request): ...
-    async def review(self, request): ...
-    async def patch(self, request): ...
-
-class ToolBackend:
-    async def call_tool(self, tool_id: str, payload: dict): ...
-    def list_tools(self): ...
-```
 
 ## Citations
 
@@ -115,6 +86,5 @@ class ToolBackend:
 | --- | --- |
 | Strands Agent-to-Agent docs | https://strandsagents.com/docs/user-guide/concepts/multi-agent/agent-to-agent/index.md |
 | Strands TypeScript SDK announcement | https://strandsagents.com/blog/strands-agents-typescript-sdk/index.md |
-| Claude Code overview / Agent SDK docs | https://docs.anthropic.com/en/docs/claude-code |
-| Claude Agent SDK MCP docs | https://console.anthropic.com/docs/en/agent-sdk/mcp |
+| Claude Agent SDK docs | https://docs.anthropic.com/en/api/agent-sdk/python |
 | Anthropic Building Effective Agents | https://www.anthropic.com/engineering/building-effective-agents |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from vigor_core.interfaces import (
@@ -18,17 +19,13 @@ from vigor_core.interfaces import (
 from vigor_core.schemas import ArtifactIR, PatchPlan, ReviewReport, ToolManifest
 from vigor_core.util import utcnow_iso
 
+SeedIRFactory = Callable[[GenerationRequest], dict[str, Any]]
+
 
 class EchoAgentBackend(AgentBackend):
-    """Deterministic agent backend that returns canned outputs.
+    """Deterministic agent backend that returns canned outputs."""
 
-    Useful for exercising the full orchestrator loop without touching a model
-    provider. Adapters can prepare the IR body themselves via
-    `seed_ir_factory`; if it is not provided the echo backend creates a minimal
-    IR whose body echoes the task goal.
-    """
-
-    def __init__(self, seed_ir_factory=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, seed_ir_factory: SeedIRFactory | None = None) -> None:
         self._seed_ir_factory = seed_ir_factory
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:

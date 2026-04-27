@@ -1,9 +1,8 @@
 """Pydantic schemas for the photo editing IR.
 
-Ranges are chosen to match Lightroom/Camera Raw conventions so XMP export is a
-straightforward field rename. The MVP persists global adjustments and a
-reduced set of local-adjustment metadata; the renderer currently uses only
-globals.
+Ranges match Lightroom/Camera Raw conventions where possible. The MVP now
+supports global adjustments plus deterministic local-mask metadata. Local
+adjustments can reference generated grayscale PNG masks via `mask_uri`.
 """
 
 from __future__ import annotations
@@ -43,12 +42,20 @@ class PhotoGlobalAdjustments(_PhotoBase):
 class PhotoLocalAdjustment(_PhotoBase):
     target: str
     mask_type: Literal[
-        "semantic_or_gradient_mask",
-        "object_mask",
+        "sky_heuristic",
+        "foreground_gradient",
+        "subject_radial",
         "linear_gradient",
         "radial_gradient",
+        "semantic_or_gradient_mask",
+        "object_mask",
     ]
     adjustments: dict[str, Any] = Field(default_factory=dict)
+    mask_uri: str | None = None
+    mask_sha256: str | None = None
+    mask_generator: str | None = None
+    feather_px: int = Field(16, ge=0, le=256)
+    invert: bool = False
 
 
 def _default_global() -> PhotoGlobalAdjustments:

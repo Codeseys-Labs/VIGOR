@@ -3,30 +3,19 @@
 This module defines every runtime object referenced by the architecture docs:
 tasks, adapter manifests, editable IRs, compile results, review reports,
 adjudication reports, patch plans, export bundles, frontiers, and provenance.
-
-Design rules (see ADR-0011):
-
-* All models inherit from `_VigorBase` which enables strict mode and forbids
-  extra fields.
-* Persisted top-level records carry `schema_version`, a stable id, and
-  `created_at`.
-* Field names are snake_case in Python; JSON serialization uses camelCase via
-  an alias generator.
-* Adapter-specific fields go under `domain` so extensions stay explicit.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
-from vigor_core.util import utcnow_iso
+from vigor_core.util import sha256_text, stable_json, utcnow_iso
 
-# ---------------------------------------------------------------------------
-# Base classes
-# ---------------------------------------------------------------------------
+ID_PATTERN = r"^[A-Za-z0-9_.-]{1,128}$"
+Decision = Literal["accept", "patch", "branch", "pivot", "escalate", "fail"]
 
 
 class _VigorBase(BaseModel):
@@ -42,15 +31,10 @@ class _VigorBase(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
-# Shared building blocks
-# ---------------------------------------------------------------------------
-
-
 class ReferenceArtifact(_VigorBase):
     """Pointer to an input artifact on disk or remote storage."""
 
-    artifact_id: str
+    artifact_id: str = Field(pattern=ID_PATTERN)
     uri: str
     media_type: str | None = None
     sha256: str | None = None
@@ -59,7 +43,7 @@ class ReferenceArtifact(_VigorBase):
 class Constraint(_VigorBase):
     """Declarative constraint applied to a task."""
 
-    id: str
+    id: str = Field(pattern=ID_PATTERN)
     type: str
     text: str
 
@@ -74,14 +58,9 @@ class Budgets(_VigorBase):
     max_tool_retries: int = 2
 
 
-# ---------------------------------------------------------------------------
-# Task specification
-# ---------------------------------------------------------------------------
-
-
 class TaskSpec(_VigorBase):
     schema_version: Literal["vigor.task.v1"] = "vigor.task.v1"
-    task_id: str
+    task_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
     goal: str
     modalities: list[str]
@@ -93,13 +72,8 @@ class TaskSpec(_VigorBase):
     domain: dict[str, Any] = Field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Adapter manifests and tool declarations
-# ---------------------------------------------------------------------------
-
-
 class ToolManifest(_VigorBase):
-    tool_id: str
+    tool_id: str = Field(pattern=ID_PATTERN)
     capability: Literal[
         "compile", "render", "simulate", "inspect", "score", "patch", "export", "observe"
     ]
@@ -113,9 +87,9 @@ class ToolManifest(_VigorBase):
 
 class AdapterManifest(_VigorBase):
     schema_version: Literal["vigor.adapter_manifest.v1"] = "vigor.adapter_manifest.v1"
-    adapter_id: str
+    adapter_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
-    domain: str
+    domain: str = Field(pattern=ID_PATTERN)
     version: str
     supported_ir: list[str]
     tools: list[ToolManifest] = Field(default_factory=list)
@@ -123,33 +97,24 @@ class AdapterManifest(_VigorBase):
     exports: list[str] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Editable IR wrapper
-# ---------------------------------------------------------------------------
-
-
 class ArtifactIR(_VigorBase):
-    """Opaque wrapper around a domain-specific IR payload.
-
-    Adapters parse the `body` field into their own Pydantic IR models. The
-    wrapper preserves hash, lineage, and generator metadata so the runtime can
-    version and replay artifacts without knowing the domain schema.
-    """
+    """Opaque wrapper around a domain-specific IR payload."""
 
     schema_version: Literal["vigor.artifact_ir.v1"] = "vigor.artifact_ir.v1"
-    candidate_id: str
+    candidate_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
     ir_type: str
-    parent_candidate_id: str | None = None
+    parent_candidate_id: str | None = Field(default=None, pattern=ID_PATTERN)
     hypothesis: str | None = None
     body: dict[str, Any] = Field(default_factory=dict)
     body_sha256: str | None = None
     generator: dict[str, Any] = Field(default_factory=dict)
 
-
-# ---------------------------------------------------------------------------
-# Compilation / rendering / simulation
-# ---------------------------------------------------------------------------
+    @model_validator(mode="after")
+    def populate_body_sha(self) -> ArtifactIR:
+        if self.body_sha256 is None:
+            self.body_sha256 = sha256_text(stable_json(self.body))
+        return self
 
 
 StopReason = Literal[
@@ -165,7 +130,7 @@ StopReason = Literal[
 class ObservableArtifact(_VigorBase):
     """A produced asset that reviewers can inspect."""
 
-    artifact_id: str
+    artifact_id: str = Field(pattern=ID_PATTERN)
     uri: str
     media_type: str
     sha256: str | None = None
@@ -173,14 +138,10 @@ class ObservableArtifact(_VigorBase):
 
 
 class RuntimeErrorRecord(_VigorBase):
-    """Structured runtime error record.
-
-    Renamed from ``RuntimeError`` to avoid shadowing the builtin inside this
-    module. The public ``__init__`` exports it as ``VigorRuntimeError``.
-    """
+    """Structured runtime error record."""
 
     schema_version: Literal["vigor.runtime_error.v1"] = "vigor.runtime_error.v1"
-    error_id: str
+    error_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
     type: Literal[
         "schema_validation",
@@ -195,17 +156,17 @@ class RuntimeErrorRecord(_VigorBase):
     ] = "generic"
     severity: Literal["high", "medium", "low"] = "medium"
     message: str
-    tool_id: str | None = None
+    tool_id: str | None = Field(default=None, pattern=ID_PATTERN)
     retryable: bool = False
     evidence_uri: str | None = None
 
 
 class CompileResult(_VigorBase):
     schema_version: Literal["vigor.compile_result.v1"] = "vigor.compile_result.v1"
-    compile_id: str
+    compile_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
-    candidate_id: str
-    tool_id: str
+    candidate_id: str = Field(pattern=ID_PATTERN)
+    tool_id: str = Field(pattern=ID_PATTERN)
     status: Literal["success", "failure", "timeout", "cancelled"]
     inputs: list[ReferenceArtifact] = Field(default_factory=list)
     outputs: list[ObservableArtifact] = Field(default_factory=list)
@@ -214,13 +175,8 @@ class CompileResult(_VigorBase):
     errors: list[RuntimeErrorRecord] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Review reports
-# ---------------------------------------------------------------------------
-
-
 class Finding(_VigorBase):
-    id: str
+    id: str = Field(pattern=ID_PATTERN)
     severity: Literal["high", "medium", "low", "info"]
     category: str
     artifact_ref: str | None = None
@@ -233,11 +189,11 @@ class Finding(_VigorBase):
 
 class ReviewReport(_VigorBase):
     schema_version: Literal["vigor.review_report.v1"] = "vigor.review_report.v1"
-    review_id: str
+    review_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
-    candidate_id: str
-    artifact_id: str | None = None
-    reviewer_id: str
+    candidate_id: str = Field(pattern=ID_PATTERN)
+    artifact_id: str | None = Field(default=None, pattern=ID_PATTERN)
+    reviewer_id: str = Field(pattern=ID_PATTERN)
     reviewer_type: Literal[
         "objective_metric",
         "learned_scorer",
@@ -251,52 +207,37 @@ class ReviewReport(_VigorBase):
     passed: bool
     confidence: float | None = None
     findings: list[Finding] = Field(default_factory=list)
-    recommended_action: Literal["accept", "patch", "branch", "pivot", "escalate", "fail"] = "accept"
+    recommended_action: Decision = "accept"
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Adjudication
-# ---------------------------------------------------------------------------
 
 
 class AdjudicationReport(_VigorBase):
     schema_version: Literal["vigor.adjudication_report.v1"] = "vigor.adjudication_report.v1"
-    adjudication_id: str
+    adjudication_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
-    candidate_id: str
-    policy_id: str
+    candidate_id: str = Field(pattern=ID_PATTERN)
+    policy_id: str = Field(pattern=ID_PATTERN)
     hard_gate_passed: bool
     normalized_scores: dict[str, float] = Field(default_factory=dict)
     composite: float | None = None
     reviewer_disagreement: float | None = None
-    decision: Literal["accept", "patch", "branch", "pivot", "escalate", "fail"]
+    decision: Decision
     basis: list[str] = Field(default_factory=list)
     selection_reason: str | None = None
     residual_risks: list[str] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Patches
-# ---------------------------------------------------------------------------
-
-
 class PatchPlan(_VigorBase):
     schema_version: Literal["vigor.patch_plan.v1"] = "vigor.patch_plan.v1"
-    patch_id: str
+    patch_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
-    source_candidate_id: str
+    source_candidate_id: str = Field(pattern=ID_PATTERN)
     basis: list[str] = Field(default_factory=list)
     objectives: list[str]
     do_not_change: list[str] = Field(default_factory=list)
     allowed_operations: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "low"
     expected_validation: list[str] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Exports
-# ---------------------------------------------------------------------------
 
 
 class ExportEntry(_VigorBase):
@@ -308,21 +249,17 @@ class ExportEntry(_VigorBase):
 
 class ExportBundle(_VigorBase):
     schema_version: Literal["vigor.export_bundle.v1"] = "vigor.export_bundle.v1"
-    export_id: str
+    export_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
-    candidate_id: str
+    candidate_id: str = Field(pattern=ID_PATTERN)
     exports: list[ExportEntry] = Field(default_factory=list)
     lossiness: list[dict[str, Any]] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Frontier
-# ---------------------------------------------------------------------------
-
-
 class FrontierCandidate(_VigorBase):
-    candidate_id: str
+    candidate_id: str = Field(pattern=ID_PATTERN)
     status: Literal["selected", "kept", "rejected"] = "kept"
+    decision: Decision | None = None
     scores: dict[str, float] = Field(default_factory=dict)
     hard_gate_passed: bool = True
     rank: int | None = None
@@ -331,34 +268,29 @@ class FrontierCandidate(_VigorBase):
 
 class Frontier(_VigorBase):
     schema_version: Literal["vigor.frontier.v1"] = "vigor.frontier.v1"
-    frontier_id: str
+    frontier_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
-    run_id: str
-    selection_policy: str
+    run_id: str = Field(pattern=ID_PATTERN)
+    selection_policy: str = Field(pattern=ID_PATTERN)
     candidates: list[FrontierCandidate] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Provenance
-# ---------------------------------------------------------------------------
-
-
 class ProvenanceActivity(_VigorBase):
-    activity_id: str
+    activity_id: str = Field(pattern=ID_PATTERN)
     type: Literal["generation", "compile", "review", "adjudication", "patch", "export"]
     agent: str | None = None
     model: str | None = None
-    tool_id: str | None = None
-    reviewer_id: str | None = None
+    tool_id: str | None = Field(default=None, pattern=ID_PATTERN)
+    reviewer_id: str | None = Field(default=None, pattern=ID_PATTERN)
 
 
 class ProvenanceRecord(_VigorBase):
     schema_version: Literal["vigor.provenance.v1"] = "vigor.provenance.v1"
-    provenance_id: str
+    provenance_id: str = Field(pattern=ID_PATTERN)
     created_at: str = Field(default_factory=utcnow_iso)
-    run_id: str
-    task_id: str
-    selected_candidate_id: str | None = None
+    run_id: str = Field(pattern=ID_PATTERN)
+    task_id: str = Field(pattern=ID_PATTERN)
+    selected_candidate_id: str | None = Field(default=None, pattern=ID_PATTERN)
     inputs: list[str] = Field(default_factory=list)
     activities: list[ProvenanceActivity] = Field(default_factory=list)
     derived_artifacts: list[str] = Field(default_factory=list)
