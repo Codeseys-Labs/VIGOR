@@ -23,7 +23,7 @@ artifact candidate -> compile -> review -> patch -> final artifact
 The outer loop improves the VIGOR harness:
 
 ```text
-harness candidate -> run benchmark tasks -> score traces -> propose harness patch -> frontier update
+harness candidate -> run benchmark tasks -> score candidate outputs -> store traces/scores -> propose harness patch -> update search history/frontier
 ```
 
 Outer-loop candidates may change:
@@ -36,6 +36,21 @@ Outer-loop candidates may change:
 6. Compiler preprocessing.
 7. Stop conditions.
 8. Human escalation policy.
+
+Harness candidates must be sandboxed and promoted through governance gates before production use.
+
+Promotion requirements:
+
+| Gate | Requirement |
+| --- | --- |
+| Interface validation | Candidate imports, schemas, and adapter manifests are valid |
+| Smoke tests | Candidate runs on a minimal task without tool or schema failure |
+| Benchmark search split | Candidate improves or preserves target metrics on search tasks |
+| Validation split | Candidate does not regress validation tasks before promotion |
+| Diff review | Human or independent code-review agent reviews harness changes |
+| Safety-sensitive approval | CAD, robotics, medical, or other safety-sensitive adapters require human approval |
+| Rollback | Previous harness version remains available and documented |
+| Release provenance | Promoted harness has version, diff, benchmark report, and reviewer signoff |
 
 ## Alternatives Considered
 

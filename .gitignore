@@ -1,0 +1,36 @@
+# Python / UV
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VIGOR runtime artifacts
+runs/
+reviewers/
+.vigor_cache/
+*.xmp.bak
+
+# Secrets
+.env
+.env.*
+!.env.example

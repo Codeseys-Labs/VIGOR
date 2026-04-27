@@ -1,5 +1,10 @@
 # VIGOR Adoption Plan: Agentic Video Generation And AIECF
 
+Status: **scope-gated.** Per the readiness assessment (C7/C8/K7), `vigor-adapter-video-aiecf` is split into two packages:
+
+1. `vigor-adapter-video-manim` (future): a standalone Manim-based video adapter. Deferred until (a) a Manim environment is wired into CI, (b) a small set of scene prompts is curated, and (c) VideoScore2 is either available on GPU or accepted in shadow mode. No package has been scaffolded yet because a non-rendering stub would be misleading.
+2. `vigor-adapter-video-aiecf` (future): a thin compatibility layer on top of `vigor-adapter-video-manim` that wraps an existing AIECF-style pipeline. Deferred until the downstream AIECF repository is identified and access is confirmed.
+
 ## Goal
 
 Adopt VIGOR as the orchestration framework for agentic educational video generation, including systems like AI Education Content Factory.
@@ -10,11 +15,11 @@ The target pipeline is:
 learning goal -> storyboard/script/scene IR -> compile/render video -> score/review -> refine -> final video + editable recipe
 ```
 
-## Why AIECF Is A Strong Fit
+## Why AIECF-Style Systems Are A Strong Fit
 
-AIECF-style systems already resemble VIGOR:
+This plan is written for AIECF-style scene-based educational video systems. The concrete mapping below should be verified against the target repository before implementation. If a specific AIECF deployment does not use a listed component, treat the row as an adapter candidate rather than an asserted fact.
 
-| Existing Pattern | VIGOR Mapping |
+| Assumed Existing Pattern | VIGOR Mapping |
 | --- | --- |
 | LLM storyboard/script/code generation | Generator over editable scene IR |
 | Manim rendering | Compiler/renderer adapter |
@@ -23,6 +28,17 @@ AIECF-style systems already resemble VIGOR:
 | Quality thresholds and refinement | Adjudication and patch loop |
 | Redis/RQ workers | Tool provider and async compile/review workers |
 | Scene map-reduce | Candidate graph and domain adapter composition |
+
+## Assumptions To Verify
+
+| Assumption | Verification Needed |
+| --- | --- |
+| Scene-based generation exists | Inspect pipeline services and data models |
+| Manim or another executable renderer is used | Inspect render worker or compiler service |
+| VLM/Gemini critique exists | Inspect review/evaluation services and prompts |
+| Redis/RQ or equivalent async workers exist | Inspect infrastructure and worker configuration |
+| Final assembly uses ffmpeg or equivalent | Inspect media assembly code |
+| Quality gates already affect refinement | Inspect threshold and retry logic |
 
 ## Proposed Video IR
 

@@ -1,0 +1,17 @@
+# CODEOWNERS for VIGOR
+
+# Default: any change needs core maintainer review.
+*       @baladithyab
+
+# Architecture docs and ADRs are governance-sensitive.
+/docs/adr/              @baladithyab
+/docs/schemas/          @baladithyab
+/docs/scoring-adjudication.md  @baladithyab
+
+# Runtime and core schemas gate framework compatibility.
+/packages/vigor-core/   @baladithyab
+/packages/vigor-runtime/ @baladithyab
+
+# Security-sensitive surface.
+/.github/workflows/     @baladithyab
+/SECURITY.md            @baladithyab

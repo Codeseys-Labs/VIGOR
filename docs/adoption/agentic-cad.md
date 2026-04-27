@@ -120,6 +120,22 @@ CAD VIGOR must distinguish prototypes from load-bearing or safety-critical parts
 
 VIGOR should not claim certification. It can produce evidence packages for qualified review.
 
+## Required Engineering Metadata
+
+CAD review is only meaningful when assumptions are explicit.
+
+| Metadata | Why It Matters |
+| --- | --- |
+| Material | Strength, stiffness, thermal behavior, print settings |
+| Load cases | Forces, moments, direction, duration, dynamic vs static load |
+| Boundary conditions | Fixed faces, fasteners, contact surfaces, constraints |
+| Tolerances | Fit, clearance, manufacturing process limits |
+| Manufacturing process | FDM, SLA, CNC, sheet metal, injection molding |
+| Safety factor | Required margin for intended use |
+| Solver settings | Mesh density, solver type, convergence, simplifications |
+
+Acceptance reports must state solver limitations and must not imply certification. Load-bearing, regulated, or safety-critical designs require qualified human engineering signoff before production use.
+
 ## Implementation Plan
 
 ### Phase 1: Parametric Script Adapter
@@ -163,3 +179,4 @@ VIGOR should not claim certification. It can produce evidence packages for quali
 3. Detect at least one geometry or manufacturability failure.
 4. Patch the IR based on the failure and improve the metric.
 5. Export CAD artifact, mesh, validation report, and provenance.
+6. For load-bearing designs, include material, load-case, boundary-condition, solver, and human-signoff fields.

@@ -2,7 +2,7 @@
 
 ## Definition
 
-**VIGOR** is a universal generate-compile-review framework for AI-based asset generation and refinement.
+**VIGOR** is a proposed modality-agnostic generate-compile-review framework for AI-based asset generation and refinement.
 
 It represents every generated output as an editable intermediate representation, compiles or renders that representation into an observable artifact, reviews the artifact with domain-specific evaluators, and iterates until acceptance criteria are met or a budget is exhausted.
 
@@ -39,9 +39,9 @@ VIGOR should be:
 
 ## Relationship To VIGA
 
-VIGA is an analysis-by-synthesis agent for programmatic visual reconstruction. Its README describes an iterative loop of generating, rendering, and verifying scenes against target images. It uses a Generator that writes and executes scene programs and a Verifier that examines rendered output from multiple viewpoints, identifies visual discrepancies, and provides feedback for the next iteration. VIGA supports BlenderBench, BlenderGym, SlideBench, custom static 3D scenes, and custom dynamic 4D scenes.
+VIGA is an analysis-by-synthesis agent for programmatic visual reconstruction. Its README describes an iterative loop of generating, rendering, and verifying scenes against target images. It uses Generator and Verifier roles: the Generator writes and executes scene programs, while the Verifier examines rendered output from multiple viewpoints, identifies visual discrepancies, and provides feedback for the next iteration. VIGA supports BlenderBench, BlenderGym, SlideBench, custom static 3D scenes, and custom dynamic 4D scenes.
 
-VIGOR generalizes VIGA by replacing graphics-specific terms with modality-neutral contracts.
+VIGOR generalizes VIGA by replacing graphics-specific terms with modality-neutral contracts. VIGA materials describe Generator and Verifier as specialized roles; some VIGA docs frame them as a dual-agent design while the README describes a single self-reflective agent alternating between roles. VIGOR makes role separation explicit as a framework decision.
 
 | VIGA | VIGOR |
 | --- | --- |
@@ -215,12 +215,22 @@ flowchart LR
     O --> A4
     O --> A5
     O --> A6
-    A1 --> Tools
-    A2 --> Tools
-    A3 --> Tools
-    A4 --> Tools
-    A5 --> Tools
-    A6 --> Tools
+    A1 --> T1
+    A1 --> T2
+    A1 --> T4
+    A1 --> T5
+    A2 --> T1
+    A2 --> T2
+    A2 --> T5
+    A3 --> T1
+    A3 --> T3
+    A3 --> T4
+    A4 --> T1
+    A4 --> T5
+    A5 --> T1
+    A5 --> T5
+    A6 --> T2
+    A6 --> T4
     O --> M
     O --> P
     O --> F
@@ -273,7 +283,7 @@ Tools should declare:
 | `cost_model` | Expected latency, compute, money, memory |
 | `failure_modes` | Known errors and retry policy |
 
-VIGA's separation between generator tools and verifier tools should become a hard VIGOR capability distinction: **mutating tools change state; observing tools only inspect state**.
+VIGA separates generator and verifier roles/tool sets. VIGOR should strengthen this into its own adapter contract: **mutating tools change persistent artifact state; observing tools inspect artifacts or control non-persistent observation state**.
 
 ### Reviewer Ensemble
 

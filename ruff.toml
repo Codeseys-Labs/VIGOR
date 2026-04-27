@@ -1,0 +1,44 @@
+line-length = 100
+target-version = "py311"
+extend-exclude = ["**/__pycache__", "**/.venv", "dist", "build"]
+
+[lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # bugbear
+  "SIM", # simplify
+  "PL",  # pylint subset
+  "RUF", # ruff-specific
+]
+ignore = [
+  "PLR0913", # too many arguments (we lean on dataclasses/pydantic)
+]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["PLR2004"] # magic-number in tests is fine
+
+[lint.extend-per-file-ignores]
+# Optional-dependency backends import the SDK lazily inside methods by design
+# (we want the package to import cleanly when the SDK is not installed).
+"packages/vigor-backend-strands/**" = ["PLC0415"]
+"packages/vigor-backend-claude-agent-sdk/**" = ["PLC0415"]
+# Orchestrator.run() encodes the full 8-stage loop; splitting it up hurts
+# readability more than the statement-count / branch-count heuristics help.
+"packages/vigor-runtime/src/vigor_runtime/orchestrator.py" = [
+  "PLR0915",
+  "PLR0912",
+  "PLC0415",
+]
+# Typer CLI idiomatically uses typer.Option in defaults and keeps AgentBackend
+# optional hooks non-abstract.
+"packages/vigor-runtime/src/vigor_runtime/cli.py" = ["B008", "PLC0415"]
+"packages/vigor-core/src/vigor_core/interfaces.py" = ["B027"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false

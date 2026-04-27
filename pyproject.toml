@@ -1,0 +1,87 @@
+# Root pyproject.toml for the VIGOR UV workspace.
+# VIGOR = Verifiable Iterative Generation Over Representations.
+
+[project]
+name = "vigor"
+version = "0.0.0"
+description = "VIGOR: Verifiable Iterative Generation Over Representations (workspace root)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "The VIGOR Authors" }]
+keywords = ["agent", "generate-compile-review", "llm", "orchestration", "vigor"]
+
+dependencies = [
+  "vigor-core",
+  "vigor-runtime",
+  "vigor-backend-strands",
+  "vigor-backend-claude-agent-sdk",
+  "vigor-adapter-photo",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5",
+  "ruff>=0.6",
+  "mypy>=1.10",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+
+[tool.uv.workspace]
+members = ["packages/*", "examples/*"]
+
+[tool.uv.sources]
+vigor-core = { workspace = true }
+vigor-runtime = { workspace = true }
+vigor-backend-strands = { workspace = true }
+vigor-backend-claude-agent-sdk = { workspace = true }
+vigor-adapter-photo = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["packages", "examples"]
+asyncio_mode = "auto"
+addopts = ["--import-mode=importlib"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+  "error",
+  # Known pytest-asyncio event-loop shutdown noise under asyncio_mode=auto.
+  "ignore::ResourceWarning",
+  "ignore::pytest.PytestUnraisableExceptionWarning",
+  # stdlib path edge.
+  "ignore::DeprecationWarning:pathlib.*",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+mypy_path = [
+  "packages/vigor-core/src",
+  "packages/vigor-runtime/src",
+  "packages/vigor-backend-strands/src",
+  "packages/vigor-backend-claude-agent-sdk/src",
+  "packages/vigor-adapter-photo/src",
+]
+packages = [
+  "vigor_core",
+  "vigor_runtime",
+  "vigor_backend_strands",
+  "vigor_backend_claude_agent_sdk",
+  "vigor_adapter_photo",
+]
+
+[[tool.mypy.overrides]]
+module = ["strands.*", "claude_agent_sdk.*"]
+ignore_missing_imports = true

@@ -1,0 +1,22 @@
+[project]
+name = "vigor-example-echo-toy-demo"
+version = "0.0.1"
+description = "End-to-end echo + toy adapter demo."
+requires-python = ">=3.11"
+license = { file = "../../LICENSE" }
+
+dependencies = [
+  "vigor-core",
+  "vigor-runtime",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/echo_toy_demo"]
+
+[tool.uv.sources]
+vigor-core = { workspace = true }
+vigor-runtime = { workspace = true }

@@ -4,11 +4,12 @@ This document summarizes the primary research and product sources used to design
 
 ## Executive Summary
 
-VIGOR is best understood as a generalization of three converging ideas:
+VIGOR is best understood as a proposed generalization of four converging ideas:
 
 1. **VIGA-style executable visual reasoning**: generate a program, render it, verify discrepancies, and revise.
 2. **Agentic harness design**: structure models with explicit tools, memory, evaluator roles, budgets, and trace artifacts.
 3. **Meta-Harness-style outer-loop optimization**: evolve the harness around a fixed model by preserving source code, execution traces, scores, and prior candidate artifacts.
+4. **Interpretable multimodal scoring**: combine objective validators, learned scorers such as VideoScore2, tool-backed inspectors, and calibrated human feedback.
 
 VIGOR should therefore be an artifact-centric framework, not a prompt recipe. The system of record should be editable intermediate representations, compiler/reviewer outputs, and provenance.
 
@@ -16,7 +17,7 @@ VIGOR should therefore be an artifact-centric framework, not a prompt recipe. Th
 
 ### Source Summary
 
-The VIGA repository describes VIGA as an analysis-by-synthesis code agent for programmatic visual reconstruction. It uses an iterative loop of generating, rendering, and verifying scenes against target images. Its Generator writes and executes scene programs with tools for planning, code execution, asset retrieval, and scene queries. Its Verifier examines rendered output from multiple viewpoints, identifies visual discrepancies, and provides feedback for the next iteration. The repo says the agent maintains contextual memory with plans, code diffs, and render history, and that the loop requires no finetuning.
+The VIGA repository describes VIGA as an analysis-by-synthesis code agent for programmatic visual reconstruction. It uses an iterative loop of generating, rendering, and verifying scenes against target images. Its Generator role writes and executes scene programs with tools for planning, code execution, asset retrieval, and scene queries. Its Verifier role examines rendered output from multiple viewpoints, identifies visual discrepancies, and provides feedback for the next iteration. The repo says the agent maintains contextual memory with plans, code diffs, and render history, and that the loop requires no finetuning.
 
 The VIGA arXiv abstract describes a tightly coupled **code-render-inspect loop** where symbolic programs are synthesized, projected into visual states, and inspected for discrepancies to guide iterative edits. It reports support for 2D document generation, 3D reconstruction, multi-step 3D editing, and 4D physical interaction.
 
@@ -63,11 +64,34 @@ The repo includes a reusable framework, onboarding flow, and reference experimen
 | Harness as optimization target | VIGOR should optimize prompts, adapters, memory, review weights, and tool policies over time |
 | Filesystem history | VIGOR run archives should preserve full candidate history and traces |
 | Candidate interface | Each domain adapter should define a stable candidate contract |
-| Validation before evaluation | Validate IR schema and tool availability before expensive compile/review |
-| Search vs held-out split | Benchmark VIGOR adapters on search sets and reserve held-out test sets |
-| Frontier tracking | Track Pareto tradeoffs such as quality, cost, editability, and safety |
+| Search and held-out split | Benchmark VIGOR adapters on search sets and reserve held-out test sets |
+| Full search history | Preserve source, scores, traces, and candidate metadata so proposers can inspect prior attempts |
 
-Meta-Harness is especially useful for VIGOR's outer loop: improving the VIGOR harness itself, not just individual artifacts.
+Meta-Harness is especially useful for VIGOR's outer loop: improving the VIGOR harness itself, not just individual artifacts. The specific Pareto/frontier policy proposed in VIGOR is an extension: Meta-Harness motivates preserving candidate history and scores, while VIGOR adds multi-objective selection across quality, cost, editability, and safety.
+
+## VideoScore2
+
+### Source Summary
+
+VideoScore2 is a multi-dimensional, interpretable evaluator for AI-generated videos. Its arXiv abstract says it explicitly evaluates visual quality, text-to-video alignment, and physical/common-sense consistency while producing detailed rationales. The project page says VideoScore2 is trained on VideoFeedback2, a dataset of about 27K human-annotated videos with scores and rationales across the three dimensions, using supervised fine-tuning followed by GRPO. The Hugging Face model card provides an inference-style prompt template that asks for the same three scores.
+
+### Reusable Lessons
+
+| VideoScore2 Pattern | VIGOR Lesson |
+| --- | --- |
+| Multi-dimensional scoring | Do not collapse video review to one opaque score |
+| Interpretable rationale | Reviewers should explain actionable failure modes |
+| Alignment plus quality plus physics/common sense | VIGOR reviewers should separate semantic, perceptual, and domain-consistency axes |
+| Best-of-N reward use | VIGOR can use learned scorers for candidate selection after calibration |
+
+### Key Sources
+
+| Source | URL |
+| --- | --- |
+| VideoScore2 paper | https://arxiv.org/abs/2509.22799 |
+| VideoScore2 project page | https://tiger-ai-lab.github.io/VideoScore2/ |
+| VideoScore2 model card | https://huggingface.co/TIGER-Lab/VideoScore2 |
+| VideoScore2 GitHub evaluation tooling | https://github.com/TIGER-AI-Lab/VideoScore2/tree/main/eval |
 
 ### Key Sources
 
@@ -82,7 +106,7 @@ Meta-Harness is especially useful for VIGOR's outer loop: improving the VIGOR ha
 
 ### Source Summary
 
-Claude Design is an Anthropic Labs product for creating designs, prototypes, slides, one-pagers, and other visual artifacts. Anthropic states that users can start from prompts, images, documents, codebases, or web captures, then refine through conversation, inline comments, direct edits, and custom sliders. The help docs emphasize that the first generation is a starting point and that the real value comes from iterating.
+Claude Design is an Anthropic Labs product for creating designs, prototypes, slides, one-pagers, and other visual artifacts. Anthropic says users can start from a text prompt, uploaded images/documents, code repositories or design files, and web captures, then refine through conversation, inline comments, direct edits, and Claude-generated controls. The help docs emphasize that the first generation is a starting point and that the real value comes from iterating.
 
 Anthropic's long-running app harness article is more directly architectural. It describes a generator/evaluator setup inspired by GANs for frontend design, where an evaluator scores criteria such as design quality, originality, craft, and functionality. The evaluator uses Playwright MCP to inspect the live page before producing critique. The article also notes that scores do not always improve monotonically and that middle iterations may be preferable to final iterations.
 
@@ -109,9 +133,9 @@ Anthropic's long-running app harness article is more directly architectural. It 
 
 ### Source Summary
 
-TRIBE v2 is a Meta AI tri-modal foundation model that predicts human brain activity in response to video, audio, and language. Meta describes a three-stage architecture: tri-modal encoding, universal integration, and brain mapping. The public demo emphasizes predicted vs actual brain activity, performance, in-silico experiments, and multimodality. The GitHub repo says predictions are for the average subject on an fsaverage5 cortical mesh.
+TRIBE v2 is a Meta AI tri-modal foundation model that predicts human brain activity in response to video, audio, and language. The public interactive demo describes a three-stage architecture: tri-modal encoding, universal integration, and brain mapping. The GitHub repo supports the core model facts: TRIBE v2 combines text, audio, and video models into a unified transformer architecture that maps multimodal representations onto a cortical surface, and pretrained predictions are for an average subject on an fsaverage5 mesh.
 
-TRIBE v2 is not an agentic review system. Public materials do not describe multi-agent critique, best-of-N artifact selection, or iterative design refinement. Its relevance to VIGOR is analogical: it demonstrates canonicalized prediction under noisy measurement and in-silico experimentation over multimodal stimuli.
+TRIBE v2 is not an agentic review system. I found no public TRIBE v2 materials describing multi-agent critique, best-of-N artifact selection, or iterative design refinement. Its relevance to VIGOR is analogical: it demonstrates canonicalized prediction under noisy measurement and in-silico experimentation over multimodal stimuli.
 
 ### Reusable Lessons
 
@@ -128,6 +152,7 @@ TRIBE v2 is not an agentic review system. Public materials do not describe multi
 | --- | --- |
 | TRIBE v2 demo | https://aidemos.atmeta.com/tribev2 |
 | TRIBE v2 repo | https://github.com/facebookresearch/tribev2 |
+| TRIBE v2 blog | https://ai.meta.com/blog/tribe-v2-brain-predictive-foundation-model/ |
 | TRIBE v2 publication page | https://ai.meta.com/research/publications/a-foundation-model-of-vision-audition-and-language-for-in-silico-neuroscience/ |
 | TRIBE v2 model card | https://huggingface.co/facebook/tribev2 |
 

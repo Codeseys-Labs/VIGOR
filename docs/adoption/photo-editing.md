@@ -94,6 +94,19 @@ The analyzer extracts scene and edit opportunities.
 | Affinity-style fallback | LUT, TIFF, PSD layers, masks, JSON recipe |
 | Unsupported editor | Rendered image plus sidecar recipe, masks, LUT, and exported TIFF/PSD |
 
+## Export Capability And Lossiness Matrix
+
+The canonical VIGOR IR should remain the source of truth because editor exports are not equally expressive.
+
+| Export Target | Strong Support | Lossy Or Risky Mapping |
+| --- | --- | --- |
+| VIGOR JSON recipe | Full canonical intent, masks, constraints, provenance | Not directly editable in commercial tools without an adapter |
+| XMP / Lightroom style | Global tone/color controls and many raw-development sliders | Semantic masks, complex layers, and some local adjustments may be partial or editor-version-specific |
+| Photoshop UXP / PSD | Adjustment layers, masks, blend modes, layer organization | Camera Raw settings and procedural masks may not round-trip exactly |
+| GIMP / GEGL | Scriptable operations, layers, masks, open workflow | Lightroom-like raw semantics and Photoshop-specific adjustments may not match exactly |
+| LUT | Portable color transform | Cannot represent masks, exposure intent, sharpening, denoise, or local edits |
+| TIFF/PSD fallback | Broad editor compatibility | May bake in some edits and reduce non-destructive editability |
+
 ## Reviewer Ensemble
 
 | Reviewer | Signal |

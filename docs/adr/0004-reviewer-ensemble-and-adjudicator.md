@@ -21,7 +21,7 @@ Reviewer categories:
 | Category | Examples |
 | --- | --- |
 | Objective validators | Tests, constraints, clipping, contrast, mesh validity, LUFS |
-| Learned scorers | VideoScore2, aesthetic models, reward models, TRIBE-like encoders where applicable |
+| Learned scorers | VideoScore2, aesthetic models, reward models; experimental neuroscience-inspired encoders only when validated for the target signal |
 | Model critics | VLM/LLM critique, semantic alignment, design review |
 | Tool-backed inspectors | Playwright, CAD solvers, physics simulators, slicers |
 | Humans | A/B preference, inline comments, accept/reject, evaluator calibration |
@@ -56,4 +56,4 @@ Negative:
 | Long-running generator/evaluator harness | https://www.anthropic.com/engineering/harness-design-long-running-apps |
 | Anthropic parallelization and evaluator-optimizer patterns | https://www.anthropic.com/engineering/building-effective-agents |
 | LLM-as-judge bias discussion | https://arxiv.org/abs/2306.05685 |
-| TRIBE v2 demo | https://aidemos.atmeta.com/tribev2 |
+| TRIBE v2 demo, used only as an analogy for multimodal prediction and uncertainty | https://aidemos.atmeta.com/tribev2 |

@@ -2,7 +2,7 @@
 
 ## Roadmap Principles
 
-VIGOR should prove universality by supporting at least two very different modalities through the same runtime before expanding.
+VIGOR should prove modality-agnostic value by supporting at least two very different modalities through the same runtime before expanding.
 
 Recommended initial pair:
 
@@ -13,7 +13,7 @@ CAD should follow once the runtime has mature provenance and safety gating.
 
 ## Phase 0: Documentation And Architecture
 
-Status: in progress
+Status: done for documentation baseline and Phase 1 runtime skeleton has shipped
 
 Deliverables:
 
@@ -24,6 +24,8 @@ Deliverables:
 | ADRs | done |
 | Adoption plans | done |
 | Adapter templates | done |
+| Runtime schemas | done |
+| Scoring/adjudication policy | done |
 
 Exit criteria:
 
@@ -33,46 +35,56 @@ Exit criteria:
 
 ## Phase 1: Runtime Skeleton
 
+Status: **shipped.** Lives in `packages/vigor-core/` and `packages/vigor-runtime/`. Exit criteria met: the toy adapter (`vigor_runtime.toy_adapter.ToyTextAdapter`) runs end to end through the eight-stage loop, `RunArchive` persists `task.json`, `adapter_manifest.json`, `candidates/<cid>/{ir,compile_result,adjudication,patch_plan}.json`, `reviews/<rid>.json`, `errors/<eid>.json`, `frontier.json`, and `final/{export_bundle,provenance}.json`. Patch loop applies patches via `DomainAdapter.apply_patch` per ADR-0010.
+
 Deliverables:
 
-| Deliverable | Description |
+| Deliverable | Status |
 | --- | --- |
-| `TaskSpec` | Goal, references, constraints, target outputs |
-| `ArtifactIR` | Versioned editable representation wrapper |
-| `CompileResult` | Compiler/render/sim result schema |
-| `ReviewReport` | Standard review report schema |
-| `AdjudicationReport` | Decision and patch-objective schema |
-| `RunArchive` | Filesystem or database-backed trajectory store |
-| `DomainAdapter` interface | Adapter contract |
+| `TaskSpec` | done (Pydantic v2, strict, camelCase aliases) |
+| `ArtifactIR` | done |
+| `CompileResult` | done |
+| `ReviewReport` | done |
+| `AdjudicationReport` | done |
+| `RunArchive` (filesystem) | done with path-traversal containment |
+| `DomainAdapter` / `AgentBackend` / `ToolBackend` interfaces | done (async, per ADR-0010) |
+| `Orchestrator` | done: catches `VigorError` + `Exception` at the boundary, runs reviewers in parallel via `asyncio.gather`, invokes `apply_patch`, writes frontier + provenance |
+| `EchoAgentBackend` + toy adapter | done |
+| CLI (`vigor demo`, `vigor version`) | done |
+| CI (ruff + format + mypy strict + pytest, Python 3.11 & 3.12) | done |
 
-Exit criteria:
+Exit criteria (met):
 
-1. A toy adapter can generate, compile, review, patch, and export.
-2. Run archive stores all intermediate state.
-3. Loop stops by acceptance or budget.
+1. A toy adapter can generate, compile, review, patch, and export. ✓
+2. Run archive stores all intermediate state. ✓
+3. Loop stops by acceptance or budget. ✓
 
 ## Phase 2: Photo Editing MVP
 
+Status: **partial — first slice shipped.** `packages/vigor-adapter-photo/` ships the canonical IR (`PhotoEditRecipeV1`), a pure-Python Pillow/NumPy preview renderer, a `HistogramCritic` (objective), JSON recipe export, and an XMP sidecar (Lightroom PV2012). Masks and VLM aesthetic critic remain deferred.
+
 Deliverables:
 
-| Deliverable | Description |
+| Deliverable | Status |
 | --- | --- |
-| `photo_edit_recipe.v1` | Global/local adjustment schema |
-| Preview renderer | JPEG input to edited preview |
-| Basic mask support | Sky/subject/foreground masks |
-| Histogram critic | Clipping and tonal checks |
-| VLM aesthetic critic | Structured critique |
-| XMP export | Lightroom-style sidecar or preset |
+| `photo_edit_recipe.v1` (global adjustments) | done |
+| Preview renderer (Pillow + NumPy) | done |
+| Basic mask support | deferred |
+| Histogram critic | done |
+| VLM aesthetic critic | deferred (needs provider + test photos) |
+| Lightroom XMP export (ProcessVersion=11.0) | done |
 
 Exit criteria:
 
-1. User can provide a photo and style prompt.
-2. System outputs preview, recipe, masks, review report, and provenance.
-3. At least one automatic patch improves a measured issue.
+1. User can provide a photo and style prompt. ✓ (via `TaskSpec.references[0]`)
+2. System outputs preview, recipe, masks, review report, and provenance. ✓ for preview/recipe/report/provenance; masks deferred.
+3. At least one automatic patch improves a measured issue. In progress (the hint-based `_apply_objective_hint` demonstrates the loop; structured patches land with the mask slice).
 
-## Phase 3: Agentic Video MVP
+## Phase 3: Agentic Video MVP (deferred)
 
-Deliverables:
+Status: not started. Deferred pending prerequisites C7 (GPU compute) and C8 (AIECF repo access) from `docs/readiness/implementation-readiness.md`. The video adapter is split into `vigor-adapter-video-manim` (standalone) and `vigor-adapter-video-aiecf` (integration).
+
+Planned deliverables once unblocked:
 
 | Deliverable | Description |
 | --- | --- |
@@ -131,7 +143,7 @@ Deliverables:
 
 | Deliverable | Description |
 | --- | --- |
-| Domain benchmark suites | Search and held-out tasks |
+| Domain benchmark suites | Search, validation, and held-out tasks |
 | Harness candidate format | Prompt/adapters/reviewer/memory policy bundle |
 | Outer-loop evaluator | Runs benchmark tasks and scores harness variants |
 | Frontier tracking | Quality/cost/safety/editability Pareto frontiers |
@@ -140,7 +152,15 @@ Exit criteria:
 
 1. VIGOR can compare two harness versions over the same task set.
 2. Outer-loop changes are reviewed before promotion.
-3. Held-out evaluation is separate from search.
+3. Search, validation, and held-out evaluation roles are separate.
+
+Benchmark split definitions:
+
+| Split | Use |
+| --- | --- |
+| Search | Used by agents or optimizers to propose harness changes |
+| Validation | Used to compare candidate harnesses before promotion |
+| Held-out test | Used only for final reporting or release qualification |
 
 ## Cross-Cutting Workstreams
 
