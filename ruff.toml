@@ -26,6 +26,11 @@ ignore = [
 # (we want the package to import cleanly when the SDK is not installed).
 "packages/vigor-backend-strands/**" = ["PLC0415"]
 "packages/vigor-backend-claude-agent-sdk/**" = ["PLC0415"]
+# vigor-mcp lazily imports the optional `mcp` SDK inside transport functions.
+"packages/vigor-mcp/**" = ["PLC0415"]
+# vigor-agent lazily imports vigor-mcp (optional extra) and __version__.
+"packages/vigor-agent/src/vigor_agent/agent.py" = ["PLC0415"]
+"packages/vigor-agent/src/vigor_agent/cli.py" = ["B008", "PLC0415"]
 # Orchestrator.run() encodes the full 8-stage loop; splitting it up hurts
 # readability more than the statement-count / branch-count heuristics help.
 "packages/vigor-runtime/src/vigor_runtime/orchestrator.py" = [

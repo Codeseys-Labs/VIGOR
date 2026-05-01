@@ -19,7 +19,9 @@ from vigor_core.interfaces import (
     ReviewRequest,
     ReviewResult,
     RunContext,
+    ToolBackend,
 )
+from vigor_core.interfaces import ToolResult as _ToolResult
 from vigor_core.schemas import (
     ArtifactIR,
     Budgets,
@@ -29,6 +31,7 @@ from vigor_core.schemas import (
     PatchPlan,
     ReviewReport,
     TaskSpec,
+    ToolManifest,
 )
 from vigor_core.scoring import ScoringPolicy
 from vigor_runtime.backends import EchoAgentBackend
@@ -315,6 +318,65 @@ async def test_toy_adapter_fails_when_text_empty(tmp_path: Path) -> None:
 class _RaisingCompileAdapter(ToyTextAdapter):
     async def compile(self, ir: ArtifactIR, context: RunContext) -> CompileResult:
         raise VigorError("boom", kind="compile_error", retryable=False)
+
+
+class _RecordingToolBackend(ToolBackend):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
+        self.calls.append((tool_id, payload))
+        return _ToolResult(tool_id=tool_id, status="success", output={"echo": payload})
+
+    async def list_tools(self) -> list[ToolManifest]:
+        return []
+
+
+class _ToolUsingAdapter(ToyTextAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.observed_tools: ToolBackend | None = None
+
+    async def compile(self, ir: ArtifactIR, context: RunContext) -> CompileResult:
+        self.observed_tools = context.tools
+        return await super().compile(ir, context)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_tools_into_run_context(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    tools = _RecordingToolBackend()
+    adapter = _ToolUsingAdapter()
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive, tools=tools)
+
+    task = TaskSpec(
+        task_id="t_tools",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task)
+
+    assert adapter.observed_tools is tools
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_tools_default_is_none(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    adapter = _ToolUsingAdapter()
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive)
+
+    task = TaskSpec(
+        task_id="t_tools_none",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task)
+
+    assert adapter.observed_tools is None
 
 
 @pytest.mark.asyncio

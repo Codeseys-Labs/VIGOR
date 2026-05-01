@@ -1,0 +1,4 @@
+{
+  "factory": "vigor_adapter_cad.adapter:CadOpenScadAdapter",
+  "allowedPrefixes": ["vigor_adapter_cad"]
+}

@@ -12,11 +12,13 @@ members = [
     "vigor-adapter-cad",
     "vigor-adapter-photo",
     "vigor-adapter-video-manim",
+    "vigor-agent",
     "vigor-backend-claude-agent-sdk",
     "vigor-backend-strands",
     "vigor-core",
     "vigor-example-echo-toy-demo",
     "vigor-harness",
+    "vigor-mcp",
     "vigor-runtime",
 ]
 
@@ -1865,6 +1867,40 @@ requires-dist = [
 ]
 
 [[package]]
+name = "vigor-agent"
+version = "0.1.0"
+source = { editable = "packages/vigor-agent" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "typer" },
+    { name = "vigor-core" },
+    { name = "vigor-runtime" },
+]
+
+[package.optional-dependencies]
+mcp = [
+    { name = "vigor-mcp" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "typer", specifier = ">=0.12" },
+    { name = "vigor-core", editable = "packages/vigor-core" },
+    { name = "vigor-mcp", marker = "extra == 'mcp'", editable = "packages/vigor-mcp" },
+    { name = "vigor-runtime", editable = "packages/vigor-runtime" },
+]
+provides-extras = ["test", "mcp"]
+
+[[package]]
 name = "vigor-backend-claude-agent-sdk"
 version = "0.1.0"
 source = { editable = "packages/vigor-backend-claude-agent-sdk" }
@@ -1964,6 +2000,32 @@ requires-dist = [
     { name = "vigor-core", editable = "packages/vigor-core" },
     { name = "vigor-runtime", editable = "packages/vigor-runtime" },
 ]
+
+[[package]]
+name = "vigor-mcp"
+version = "0.1.0"
+source = { editable = "packages/vigor-mcp" }
+dependencies = [
+    { name = "vigor-core" },
+]
+
+[package.optional-dependencies]
+mcp = [
+    { name = "mcp" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
+    { name = "vigor-core", editable = "packages/vigor-core" },
+]
+provides-extras = ["mcp", "test"]
 
 [[package]]
 name = "vigor-runtime"
