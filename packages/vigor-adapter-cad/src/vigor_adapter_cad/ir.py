@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+from vigor_core.registry import register_ir
 
 
 class _CadBase(BaseModel):
@@ -77,3 +78,6 @@ class CadParametricIRV1(_CadBase):
     parameters: CadParameters = Field(default_factory=_default_parameters)
     constraints: CadConstraints = Field(default_factory=_default_constraints)
     features: list[CadFeature] = Field(default_factory=_default_features)
+
+
+register_ir(CadParametricIRV1)

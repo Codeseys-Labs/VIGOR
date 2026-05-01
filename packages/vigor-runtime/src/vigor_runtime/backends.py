@@ -76,3 +76,18 @@ class NullToolBackend(ToolBackend):
 
     async def list_tools(self) -> list[ToolManifest]:
         return []
+
+
+def _seed_text_from_goal(request: GenerationRequest) -> dict[str, Any]:
+    return {"text": request.task.goal}
+
+
+def make_toy_echo_backend() -> EchoAgentBackend:
+    """No-arg factory: an `EchoAgentBackend` that produces ``{"text": goal}`` IR.
+
+    Useful as a default backend in `AgentConfig` factory refs when the
+    consumer wants the toy text adapter to work end-to-end without
+    writing a custom backend.
+    """
+
+    return EchoAgentBackend(seed_ir_factory=_seed_text_from_goal)
