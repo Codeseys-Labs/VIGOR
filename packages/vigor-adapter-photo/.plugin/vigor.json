@@ -1,0 +1,4 @@
+{
+  "factory": "vigor_adapter_photo.adapter:PhotoEditingAdapter",
+  "allowedPrefixes": ["vigor_adapter_photo"]
+}

@@ -26,13 +26,20 @@ from vigor_core.schemas import (
 
 @dataclass(slots=True)
 class RunContext:
-    """Runtime context passed into adapter calls."""
+    """Runtime context passed into adapter calls.
+
+    ``tools`` is an optional ambient ``ToolBackend`` (typically an MCP
+    bridge) made available to adapters that want to call out to MCP
+    servers configured at the agent level. Adapters that don't need it
+    can ignore the field; existing adapters continue to work unchanged.
+    """
 
     run_id: str
     run_dir: str
     task: TaskSpec
     iteration: int = 0
     extras: dict[str, Any] = field(default_factory=dict)
+    tools: ToolBackend | None = None
 
 
 @dataclass(slots=True)

@@ -1,0 +1,4 @@
+{
+  "factory": "vigor_adapter_video_manim.adapter:ManimVideoAdapter",
+  "allowedPrefixes": ["vigor_adapter_video_manim"]
+}

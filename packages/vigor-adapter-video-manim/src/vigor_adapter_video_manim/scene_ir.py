@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+from vigor_core.registry import register_ir
 
 
 class ManimSceneIRV1(BaseModel):
@@ -23,3 +24,6 @@ class ManimSceneIRV1(BaseModel):
     python_code: str
     prompt: str | None = None
     duration_s: float | None = Field(default=None, gt=0)
+
+
+register_ir(ManimSceneIRV1)

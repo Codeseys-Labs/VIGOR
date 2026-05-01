@@ -1,5 +1,13 @@
 """VIGOR core package."""
 
+from vigor_core.agent_config import (
+    AdapterSpec,
+    AgentConfig,
+    BackendSpec,
+    FactoryRef,
+    MCPServerSpec,
+    RoutingPolicy,
+)
 from vigor_core.archive import RunArchive
 from vigor_core.errors import (
     AdapterContractError,
@@ -25,6 +33,12 @@ from vigor_core.interfaces import (
     ToolBackend,
     ToolResult,
     ValidationReport,
+)
+from vigor_core.plugin import (
+    OpenPluginManifest,
+    SkillTemplate,
+    export_plugin_json,
+    export_skill_md,
 )
 from vigor_core.registry import (
     export_json_schema,
@@ -81,10 +95,13 @@ __all__ = [
     "ID_PATTERN",
     "AdapterContractError",
     "AdapterManifest",
+    "AdapterSpec",
     "AdjudicationInputs",
     "AdjudicationReport",
     "AgentBackend",
+    "AgentConfig",
     "ArtifactIR",
+    "BackendSpec",
     "BudgetExceededError",
     "Budgets",
     "CompileError",
@@ -95,12 +112,15 @@ __all__ = [
     "ExportBundle",
     "ExportEntry",
     "ExportError",
+    "FactoryRef",
     "Finding",
     "Frontier",
     "FrontierCandidate",
     "GenerationRequest",
     "GenerationResult",
+    "MCPServerSpec",
     "ObservableArtifact",
+    "OpenPluginManifest",
     "PatchPlan",
     "PatchProposal",
     "PatchProposalRequest",
@@ -112,10 +132,12 @@ __all__ = [
     "ReviewRequest",
     "ReviewResult",
     "ReviewerError",
+    "RoutingPolicy",
     "RunArchive",
     "RunContext",
     "SchemaValidationError",
     "ScoringPolicy",
+    "SkillTemplate",
     "StopReason",
     "TaskSpec",
     "ToolBackend",
@@ -128,6 +150,8 @@ __all__ = [
     "adjudicate",
     "build_frontier",
     "export_json_schema",
+    "export_plugin_json",
+    "export_skill_md",
     "get_ir_model",
     "normalize_score",
     "register_ir",

@@ -1,0 +1,9 @@
+{
+  "name": "vigor-adapter-video-manim",
+  "version": "0.1.0",
+  "description": "VIGOR Manim video domain adapter (Open Plugin Spec v1).",
+  "homepage": "https://github.com/codeseys-labs/vigor",
+  "license": "MIT",
+  "keywords": ["vigor", "video", "manim", "animation"],
+  "skills": "./skills/"
+}

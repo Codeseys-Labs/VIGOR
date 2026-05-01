@@ -1,0 +1,9 @@
+{
+  "name": "vigor-adapter-cad",
+  "version": "0.1.0",
+  "description": "VIGOR CAD domain adapter (Open Plugin Spec v1).",
+  "homepage": "https://github.com/codeseys-labs/vigor",
+  "license": "MIT",
+  "keywords": ["vigor", "cad", "openscad", "parametric"],
+  "skills": "./skills/"
+}

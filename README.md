@@ -38,6 +38,8 @@ High-reliability AI generation workflows should expose four things:
 packages/
   vigor-core/                        # schemas, interfaces, archive, scoring, frontier
   vigor-runtime/                     # orchestrator, echo backend, CLI, toy adapter
+  vigor-agent/                       # configurable agent: AgentConfig + router + CLI
+  vigor-mcp/                         # MCP-as-ToolBackend bridge (stdio + http/sse)
   vigor-backend-strands/             # optional Strands-backed AgentBackend
   vigor-backend-claude-agent-sdk/    # optional Claude Agent SDK AgentBackend
   vigor-adapter-photo/               # photo editing adapter with masks + XMP export
@@ -47,6 +49,21 @@ packages/
 examples/
   echo-toy-demo/                     # smallest runnable demo
 ```
+
+## Generalized agent
+
+`vigor-agent` lets you ship one configurable VIGOR agent that pulls in any
+combination of adapters and MCP servers from a YAML/JSON config. See
+`docs/adr/0014-generalized-agent-config.md` for the schema rationale.
+
+```bash
+uv run vigor-agent run --config agent.yaml task.json
+```
+
+Adapters are also published as **Open Plugin Spec v1** packages (each
+ships `.plugin/plugin.json` + a generated `SKILL.md`) so the same
+package drops into Claude Code, Hermes, Strands, Goose, and other
+plugin hosts. See `docs/adr/0015-open-plugin-spec-compatibility.md`.
 
 ## Getting Started
 

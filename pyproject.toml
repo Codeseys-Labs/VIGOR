@@ -36,6 +36,8 @@ vigor-adapter-photo = { workspace = true }
 vigor-adapter-video-manim = { workspace = true }
 vigor-adapter-cad = { workspace = true }
 vigor-harness = { workspace = true }
+vigor-agent = { workspace = true }
+vigor-mcp = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["packages", "examples"]
@@ -69,6 +71,8 @@ mypy_path = [
   "packages/vigor-adapter-video-manim/src",
   "packages/vigor-adapter-cad/src",
   "packages/vigor-harness/src",
+  "packages/vigor-agent/src",
+  "packages/vigor-mcp/src",
 ]
 packages = [
   "vigor_core",
@@ -79,8 +83,10 @@ packages = [
   "vigor_adapter_video_manim",
   "vigor_adapter_cad",
   "vigor_harness",
+  "vigor_agent",
+  "vigor_mcp",
 ]
 
 [[tool.mypy.overrides]]
-module = ["strands.*", "claude_agent_sdk.*"]
+module = ["strands.*", "claude_agent_sdk.*", "yaml", "yaml.*", "mcp", "mcp.*"]
 ignore_missing_imports = true
