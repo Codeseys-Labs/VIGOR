@@ -23,6 +23,7 @@ from vigor_core.interfaces import (
     RepresentationPlan,
     ReviewRequest,
     RunContext,
+    ToolBackend,
 )
 from vigor_core.schemas import (
     AdjudicationReport,
@@ -76,11 +77,13 @@ class Orchestrator:
         backend: AgentBackend,
         archive: RunArchive,
         policy: ScoringPolicy | None = None,
+        tools: ToolBackend | None = None,
     ) -> None:
         self._adapter = adapter
         self._backend = backend
         self._archive = archive
         self._policy = policy or ScoringPolicy(policy_id="default.v1")
+        self._tools = tools
 
     async def run(self, task: TaskSpec) -> RunResult:
         run_id = task.task_id
@@ -99,7 +102,10 @@ class Orchestrator:
             manifest = await self._adapter.describe_capabilities()
             self._archive.write_manifest(run_id, manifest)
             context = RunContext(
-                run_id=run_id, run_dir=str(self._archive.run_dir(run_id)), task=task
+                run_id=run_id,
+                run_dir=str(self._archive.run_dir(run_id)),
+                task=task,
+                tools=self._tools,
             )
             plan = await self._adapter.plan_representation(task)
             prior: list[ArtifactIR] = []
