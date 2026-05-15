@@ -1,0 +1,52 @@
+# AgentConfig for the agent-demo: one agent, three modalities, one MCP server.
+#
+# - Echo backend keeps the demo deterministic and offline.
+# - All three first-slice adapters are enabled and routed by modality_match.
+# - One filesystem-style MCP server is declared via stdio for shape only:
+#   it points at the official 'mcp-server-filesystem' command, but the
+#   integration test injects a fake SessionOpener so no subprocess actually
+#   starts. Operators with the npm package installed can use this config
+#   directly to talk to a real MCP server.
+
+schemaVersion: vigor.agent_config.v1
+agentId: agent_demo
+
+backend:
+  backendId: backend_echo_demo
+  factory:
+    factory: agent_demo.factories:make_demo_echo_backend
+    allowedPrefixes: [agent_demo]
+
+adapters:
+  - adapterId: adapter_photo
+    factory:
+      factory: agent_demo.factories:make_photo_adapter
+      allowedPrefixes: [agent_demo]
+    modalities: [photo_editing]
+    domains: [photo_editing]
+
+  - adapterId: adapter_video_manim
+    factory:
+      factory: agent_demo.factories:make_manim_adapter
+      allowedPrefixes: [agent_demo]
+    modalities: [video_manim]
+    domains: [video_manim]
+
+  - adapterId: adapter_cad
+    factory:
+      factory: agent_demo.factories:make_cad_adapter
+      allowedPrefixes: [agent_demo]
+    modalities: [cad_openscad]
+    domains: [cad_openscad]
+
+routing:
+  strategy: modality_match
+
+mcpServers:
+  - serverId: filesystem
+    transport: stdio
+    command: [npx, "-y", "@modelcontextprotocol/server-filesystem", "."]
+    toolAllowlist: [read_file, list_directory]
+    timeoutS: 15
+
+archiveDir: examples/agent-demo/runs

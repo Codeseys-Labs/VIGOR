@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "vigor.task.v1",
+  "taskId": "demo_cad_0001",
+  "goal": "Generate a small bracket plate",
+  "modalities": ["cad_openscad"],
+  "budgets": {"maxIterations": 1, "maxCandidates": 1}
+}

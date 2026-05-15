@@ -48,6 +48,7 @@ packages/
   vigor-harness/                     # Meta-Harness-style evaluator
 examples/
   echo-toy-demo/                     # smallest runnable demo
+  agent-demo/                        # one configurable agent across photo + video + CAD
 ```
 
 ## Generalized agent
@@ -58,6 +59,20 @@ combination of adapters and MCP servers from a YAML/JSON config. See
 
 ```bash
 uv run vigor-agent run --config agent.yaml task.json
+```
+
+A runnable end-to-end example lives in `examples/agent-demo/` — one
+agent.yaml declares all three first-slice adapters (photo, video-manim,
+cad), an echo backend, and one MCP server, and the same CLI dispatches
+each modality through `routing.strategy: modality_match`:
+
+```bash
+uv run vigor-agent run --config examples/agent-demo/agent.yaml \
+  examples/agent-demo/tasks/photo.json
+uv run vigor-agent run --config examples/agent-demo/agent.yaml \
+  examples/agent-demo/tasks/video.json
+uv run vigor-agent run --config examples/agent-demo/agent.yaml \
+  examples/agent-demo/tasks/cad.json
 ```
 
 Adapters are also published as **Open Plugin Spec v1** packages (each

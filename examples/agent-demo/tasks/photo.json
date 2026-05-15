@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "vigor.task.v1",
+  "taskId": "demo_photo_0001",
+  "goal": "Brighten and warm up the demo image",
+  "modalities": ["photo_editing"],
+  "references": [
+    {
+      "artifactId": "ref_input",
+      "uri": "examples/agent-demo/assets/sample.jpg",
+      "mediaType": "image/jpeg"
+    }
+  ],
+  "budgets": {"maxIterations": 1, "maxCandidates": 1}
+}

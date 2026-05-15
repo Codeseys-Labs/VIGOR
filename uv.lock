@@ -16,6 +16,7 @@ members = [
     "vigor-backend-claude-agent-sdk",
     "vigor-backend-strands",
     "vigor-core",
+    "vigor-example-agent-demo",
     "vigor-example-echo-toy-demo",
     "vigor-harness",
     "vigor-mcp",
@@ -1967,6 +1968,29 @@ dependencies = [
 requires-dist = [
     { name = "pydantic", specifier = ">=2.8" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'", specifier = ">=4.10" },
+]
+
+[[package]]
+name = "vigor-example-agent-demo"
+version = "0.0.1"
+source = { editable = "examples/agent-demo" }
+dependencies = [
+    { name = "vigor-adapter-cad" },
+    { name = "vigor-adapter-photo" },
+    { name = "vigor-adapter-video-manim" },
+    { name = "vigor-agent" },
+    { name = "vigor-core" },
+    { name = "vigor-runtime" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "vigor-adapter-cad", editable = "packages/vigor-adapter-cad" },
+    { name = "vigor-adapter-photo", editable = "packages/vigor-adapter-photo" },
+    { name = "vigor-adapter-video-manim", editable = "packages/vigor-adapter-video-manim" },
+    { name = "vigor-agent", editable = "packages/vigor-agent" },
+    { name = "vigor-core", editable = "packages/vigor-core" },
+    { name = "vigor-runtime", editable = "packages/vigor-runtime" },
 ]
 
 [[package]]
