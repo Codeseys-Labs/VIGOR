@@ -15,9 +15,10 @@ VIGOR records architectural decisions as ADRs in this directory. New ADRs (ADR-0
 | [ADR-0009](0009-monorepo-layout.md) | Use A Single UV Monorepo With `packages/` And `examples/` | accepted | 2026-04-26 |
 | [ADR-0010](0010-async-core-interfaces.md) | Async Core Interfaces For Adapters, Backends, And Patches | accepted | 2026-04-26 |
 | [ADR-0011](0011-ir-schema-versioning.md) | IR Schema Versioning And Discriminated Unions | accepted | 2026-04-26 |
+| [ADR-0012](0012-cost-ceiling-enforcement.md) | Enforce Cost Ceilings Via AgentBackend Usage Telemetry And A RunBudgetTracker | proposed | 2026-05-15 |
+| [ADR-0013](0013-multi-tenant-subprocess-env-hardening.md) | Default-Drop Subprocess Environment For MCP Stdio And Per-Tenant Run Archive Scoping | proposed | 2026-05-15 |
 | [ADR-0017](0017-pure-mcp-plugin-support.md) | Admit Pure-MCP Plugins As Ambient Tool Sources | proposed | 2026-05-15 |
 | [ADR-0018](0018-vendor-manifest-dual-publishing.md) | Dual-Publish Vendor Manifests From The Adapter Generator For Open-Plugin-Spec Host Compatibility | proposed | 2026-05-15 |
+| [ADR-0019](0019-library-first-deployment-posture.md) | Ship VIGOR As Library + CLI; Defer Hosted vigor-server As Downstream Concern | proposed | 2026-05-15 |
 
 ADR-0014 (Generalized Agent Configuration) and ADR-0015 (Open Plugin Spec v1 Compatibility) were authored on the unmerged `claude/agent-adapter-framework-1KOmV` feature branch and will appear in this index when that branch lands. ADR-0017 and ADR-0018 are written to land alongside them; ADR-0018 amends a single deferral row in ADR-0015's Alternatives table, all four are mutually referencing.
-
-ADR numbers 0012, 0013, and 0016 are reserved for in-flight architect tasks tracked in Seeds.
