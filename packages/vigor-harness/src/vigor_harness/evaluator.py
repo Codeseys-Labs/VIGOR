@@ -26,7 +26,9 @@ def _load_factory(path: str, allowed_prefixes: list[str]) -> Any:
     module_name, _, attr = path.partition(":")
     if not module_name or not attr:
         raise ValueError(f"factory path must be 'module:attr', got {path!r}")
-    if not any(module_name.startswith(prefix) for prefix in allowed_prefixes):
+    if not any(
+        module_name == prefix or module_name.startswith(prefix + ".") for prefix in allowed_prefixes
+    ):
         raise ValueError(
             f"factory module {module_name!r} is not in allowed prefixes {allowed_prefixes!r}"
         )
