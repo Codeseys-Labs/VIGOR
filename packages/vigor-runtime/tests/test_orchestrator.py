@@ -19,7 +19,9 @@ from vigor_core.interfaces import (
     ReviewRequest,
     ReviewResult,
     RunContext,
+    ToolBackend,
 )
+from vigor_core.interfaces import ToolResult as _ToolResult
 from vigor_core.schemas import (
     ArtifactIR,
     Budgets,
@@ -29,6 +31,7 @@ from vigor_core.schemas import (
     PatchPlan,
     ReviewReport,
     TaskSpec,
+    ToolManifest,
 )
 from vigor_core.scoring import ScoringPolicy
 from vigor_runtime.backends import EchoAgentBackend
@@ -317,6 +320,65 @@ class _RaisingCompileAdapter(ToyTextAdapter):
         raise VigorError("boom", kind="compile_error", retryable=False)
 
 
+class _RecordingToolBackend(ToolBackend):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
+        self.calls.append((tool_id, payload))
+        return _ToolResult(tool_id=tool_id, status="success", output={"echo": payload})
+
+    async def list_tools(self) -> list[ToolManifest]:
+        return []
+
+
+class _ToolUsingAdapter(ToyTextAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.observed_tools: ToolBackend | None = None
+
+    async def compile(self, ir: ArtifactIR, context: RunContext) -> CompileResult:
+        self.observed_tools = context.tools
+        return await super().compile(ir, context)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_tools_into_run_context(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    tools = _RecordingToolBackend()
+    adapter = _ToolUsingAdapter()
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive, tools=tools)
+
+    task = TaskSpec(
+        task_id="t_tools",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task)
+
+    assert adapter.observed_tools is tools
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_tools_default_is_none(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    adapter = _ToolUsingAdapter()
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive)
+
+    task = TaskSpec(
+        task_id="t_tools_none",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task)
+
+    assert adapter.observed_tools is None
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_converts_compile_exception_to_failure(tmp_path: Path) -> None:
     archive = RunArchive(tmp_path)
@@ -339,3 +401,65 @@ async def test_orchestrator_converts_compile_exception_to_failure(tmp_path: Path
     assert compile_result_json["status"] == "failure"
     assert compile_result_json["errors"]
     assert compile_result_json["errors"][0]["type"] == "compile_error"
+
+
+class _CountingToolBackend(ToolBackend):
+    """A ToolBackend that records how many times aclose is invoked."""
+
+    def __init__(self) -> None:
+        self.aclose_calls = 0
+
+    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
+        return _ToolResult(tool_id=tool_id, status="success", output={})
+
+    async def list_tools(self) -> list[ToolManifest]:
+        return []
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_orchestrator_does_not_close_injected_tools(tmp_path: Path) -> None:
+    """Tool backends are owned by the agent layer; runtime must NOT close them."""
+
+    archive = RunArchive(tmp_path)
+    tools = _CountingToolBackend()
+    adapter = ToyTextAdapter()
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive, tools=tools)
+    task = TaskSpec(
+        task_id="t_tools_lifetime",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task)
+    # First run does NOT close tools (ownership lives with AgentOrchestrator)
+    assert tools.aclose_calls == 0
+    # A second run reuses the same tools instance unchanged
+    task2 = TaskSpec(
+        task_id="t_tools_lifetime_2",
+        goal="hello again",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task2)
+    assert tools.aclose_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_backend_aclose_default_is_noop() -> None:
+    """The default ``aclose`` on ToolBackend is callable and returns None."""
+
+    class _MinimalTools(ToolBackend):
+        async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
+            return _ToolResult(tool_id=tool_id, status="success", output={})
+
+        async def list_tools(self) -> list[ToolManifest]:
+            return []
+
+    tools = _MinimalTools()
+    # Default aclose is a no-op coroutine inherited from the ABC.
+    result = await tools.aclose()
+    assert result is None

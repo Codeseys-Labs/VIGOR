@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+from vigor_core.registry import register_ir
 
 
 class _PhotoBase(BaseModel):
@@ -84,3 +85,6 @@ class PhotoEditRecipeV1(_PhotoBase):
     global_adjustments: PhotoGlobalAdjustments = Field(default_factory=_default_global)
     local_adjustments: list[PhotoLocalAdjustment] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+
+
+register_ir(PhotoEditRecipeV1)

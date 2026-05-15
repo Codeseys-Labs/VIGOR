@@ -1,0 +1,9 @@
+{
+  "name": "vigor-adapter-photo",
+  "version": "0.2.0",
+  "description": "VIGOR photo-editing domain adapter (Open Plugin Spec v1).",
+  "homepage": "https://github.com/codeseys-labs/vigor",
+  "license": "MIT",
+  "keywords": ["vigor", "photo-editing", "lightroom", "xmp"],
+  "skills": "./skills/"
+}
