@@ -1,0 +1,49 @@
+name: skill-drift
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  regen-skills:
+    name: regenerate SKILL.md and check for drift
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync workspace
+        run: uv sync --locked --all-packages --all-extras
+
+      - name: Regenerate adapter SKILL.md files
+        run: uv run python scripts/regen_skills.py
+
+      - name: Fail if regenerated SKILL.md drifts from committed files
+        run: |
+          if ! git diff --exit-code packages/*/skills/; then
+            echo "::error::SKILL.md drift detected. Adapter IR schemas changed without"
+            echo "::error::regenerating skills. Run 'uv run python scripts/regen_skills.py'"
+            echo "::error::locally and commit the result. See ADR-0015."
+            exit 1
+          fi
