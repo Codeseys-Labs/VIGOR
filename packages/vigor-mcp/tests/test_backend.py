@@ -222,6 +222,142 @@ async def test_call_tool_timeout_resets_handle_for_next_call() -> None:
     await backend.aclose()
 
 
+@dataclass
+class _AnnotatedTool:
+    name: str
+    annotations: dict[str, Any] = field(default_factory=dict)
+    description: str = ""
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "annotations": self.annotations,
+        }
+
+
+class _MutatorAwareSession:
+    """Session whose ``list_tools`` exposes one observer + one mutator tool."""
+
+    def __init__(self) -> None:
+        self.call_log: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def list_tools(self) -> _FakeListResult:
+        return _FakeListResult(
+            tools=[
+                _AnnotatedTool(name="read"),
+                _AnnotatedTool(name="write", annotations={"destructiveHint": True}),
+            ]
+        )
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> _FakeCallResult:
+        self.call_log.append((name, arguments))
+        return _FakeCallResult(
+            content=[_FakeContentBlock(text=name)],
+            structuredContent={"name": name, "args": arguments},
+        )
+
+
+def _mutator_opener() -> Any:
+    sessions: dict[str, _MutatorAwareSession] = {}
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _MutatorAwareSession:
+        return sessions.setdefault(spec.server_id, _MutatorAwareSession())
+
+    opener.sessions = sessions  # type: ignore[attr-defined]
+    return opener
+
+
+@pytest.mark.asyncio
+async def test_call_tool_observer_passes_without_capability() -> None:
+    """Observer tools are always callable; no capability needed (ADR-0016 §3.2)."""
+
+    opener = _mutator_opener()
+    backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener)
+    result = await backend.call_tool("mcp.alpha.read", {})
+    assert result.status == "success"
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_mutator_denied_without_capability() -> None:
+    """Mutator without capability → failure, server is NOT invoked."""
+
+    opener = _mutator_opener()
+    backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener)
+    result = await backend.call_tool("mcp.alpha.write", {"data": "x"})
+    assert result.status == "failure"
+    assert "requires capability grant" in (result.error or "")
+    # The session must not have received the call (fail-closed before dispatch).
+    sessions: dict[str, _MutatorAwareSession] = opener.sessions  # type: ignore[attr-defined]
+    assert sessions["alpha"].call_log == []
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_mutator_denied_with_empty_capability() -> None:
+    """An explicit empty frozenset is identical to None (default-deny)."""
+
+    opener = _mutator_opener()
+    backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener)
+    result = await backend.call_tool(
+        "mcp.alpha.write", {"data": "x"}, capabilities=frozenset()
+    )
+    assert result.status == "failure"
+    assert "requires capability grant" in (result.error or "")
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_mutator_passes_with_capability() -> None:
+    """Mutator with matching capability id → reaches the server."""
+
+    opener = _mutator_opener()
+    backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener)
+    result = await backend.call_tool(
+        "mcp.alpha.write", {"data": "x"}, capabilities=frozenset({"mcp.alpha.write"})
+    )
+    assert result.status == "success"
+    sessions: dict[str, _MutatorAwareSession] = opener.sessions  # type: ignore[attr-defined]
+    assert sessions["alpha"].call_log == [("write", {"data": "x"})]
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_capability_is_per_tool_not_blanket() -> None:
+    """A capability for tool A must NOT authorise mutator tool B."""
+
+    opener = _mutator_opener()
+    backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener)
+    # Hand out an unrelated capability; the mutator we call is still denied.
+    result = await backend.call_tool(
+        "mcp.alpha.write", {}, capabilities=frozenset({"mcp.alpha.read"})
+    )
+    assert result.status == "failure"
+    assert "requires capability grant" in (result.error or "")
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_mutator_denied_takes_precedence_over_dispatch() -> None:
+    """Mutator denial prevents session.call_tool; no roundtrip side-effects."""
+
+    opener = _mutator_opener()
+    backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener)
+    # No capability → denial; even after the manifest cache is warm
+    # (denied call still warms it via list_tools), a second call must
+    # remain denied.
+    first = await backend.call_tool("mcp.alpha.write", {})
+    assert first.status == "failure"
+    second = await backend.call_tool("mcp.alpha.write", {})
+    assert second.status == "failure"
+    sessions: dict[str, _MutatorAwareSession] = opener.sessions  # type: ignore[attr-defined]
+    assert sessions["alpha"].call_log == []
+    await backend.aclose()
+
+
 @pytest.mark.asyncio
 async def test_ensure_open_rolls_back_on_failure() -> None:
     """If session_opener raises, the AsyncExitStack must be reset."""

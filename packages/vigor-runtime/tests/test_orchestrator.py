@@ -323,10 +323,16 @@ class _RaisingCompileAdapter(ToyTextAdapter):
 
 class _RecordingToolBackend(ToolBackend):
     def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.calls: list[tuple[str, dict[str, Any], frozenset[str] | None]] = []
 
-    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
-        self.calls.append((tool_id, payload))
+    async def call_tool(
+        self,
+        tool_id: str,
+        payload: dict[str, Any],
+        *,
+        capabilities: frozenset[str] | None = None,
+    ) -> _ToolResult:
+        self.calls.append((tool_id, payload, capabilities))
         return _ToolResult(tool_id=tool_id, status="success", output={"echo": payload})
 
     async def list_tools(self) -> list[ToolManifest]:
@@ -360,6 +366,64 @@ async def test_orchestrator_passes_tools_into_run_context(tmp_path: Path) -> Non
     await orchestrator.run(task)
 
     assert adapter.observed_tools is tools
+
+
+class _CapabilityObservingAdapter(ToyTextAdapter):
+    """Captures the ``tool_capabilities`` frozenset from the run context."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.observed_capabilities: frozenset[str] | None = None
+
+    async def compile(self, ir: ArtifactIR, context: RunContext) -> CompileResult:
+        self.observed_capabilities = context.tool_capabilities
+        return await super().compile(ir, context)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_default_tool_capabilities_is_empty(tmp_path: Path) -> None:
+    """Default-deny: capabilities default to an empty frozenset."""
+
+    archive = RunArchive(tmp_path)
+    adapter = _CapabilityObservingAdapter()
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive)
+
+    task = TaskSpec(
+        task_id="t_caps_default",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task)
+
+    assert adapter.observed_capabilities == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_threads_tool_capabilities_into_context(tmp_path: Path) -> None:
+    """Capabilities passed to the constructor surface on ``RunContext``."""
+
+    archive = RunArchive(tmp_path)
+    adapter = _CapabilityObservingAdapter()
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    granted = frozenset({"mcp.alpha.write", "mcp.beta.export"})
+    orchestrator = Orchestrator(
+        adapter=adapter,
+        backend=backend,
+        archive=archive,
+        tool_capabilities=granted,
+    )
+
+    task = TaskSpec(
+        task_id="t_caps_grant",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task)
+
+    assert adapter.observed_capabilities == granted
 
 
 @pytest.mark.asyncio
@@ -410,7 +474,13 @@ class _CountingToolBackend(ToolBackend):
     def __init__(self) -> None:
         self.aclose_calls = 0
 
-    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
+    async def call_tool(
+        self,
+        tool_id: str,
+        payload: dict[str, Any],
+        *,
+        capabilities: frozenset[str] | None = None,
+    ) -> _ToolResult:
         return _ToolResult(tool_id=tool_id, status="success", output={})
 
     async def list_tools(self) -> list[ToolManifest]:
@@ -563,7 +633,13 @@ async def test_tool_backend_aclose_default_is_noop() -> None:
     """The default ``aclose`` on ToolBackend is callable and returns None."""
 
     class _MinimalTools(ToolBackend):
-        async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
+        async def call_tool(
+            self,
+            tool_id: str,
+            payload: dict[str, Any],
+            *,
+            capabilities: frozenset[str] | None = None,
+        ) -> _ToolResult:
             return _ToolResult(tool_id=tool_id, status="success", output={})
 
         async def list_tools(self) -> list[ToolManifest]:

@@ -84,6 +84,21 @@ class _ServerHandle:
         self._tools_cache = manifests
         return manifests
 
+    async def get_manifest(self, opener: SessionOpener, tool_id: str) -> ToolManifest | None:
+        """Return the cached `ToolManifest` for ``tool_id`` on this server.
+
+        Triggers a one-shot ``list_tools`` round-trip on first lookup so
+        the call_tool path can read ``mutability`` without a per-call
+        protocol roundtrip. Returns None if the tool is not in the
+        listed surface (which, with an allowlist, also means denied).
+        """
+
+        manifests = await self.list_tools(opener)
+        for manifest in manifests:
+            if manifest.tool_id == tool_id:
+                return manifest
+        return None
+
     async def aclose(self) -> None:
         async with self._lock:
             await self._stack.aclose()
@@ -119,21 +134,19 @@ class MCPToolBackend(ToolBackend):
             results.extend(await handle.list_tools(self._opener))
         return results
 
-    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> ToolResult:
+    async def call_tool(
+        self,
+        tool_id: str,
+        payload: dict[str, Any],
+        *,
+        capabilities: frozenset[str] | None = None,
+    ) -> ToolResult:
         server_id, tool_name = self._parse_tool_id(tool_id)
         handle = self._handles.get(server_id)
-        if handle is None:
-            return ToolResult(
-                tool_id=tool_id,
-                status="failure",
-                error=f"unknown MCP server_id {server_id!r}",
-            )
-        if handle.allowlist is not None and tool_name not in handle.allowlist:
-            return ToolResult(
-                tool_id=tool_id,
-                status="failure",
-                error=f"tool {tool_name!r} blocked by allowlist on {server_id!r}",
-            )
+        gate = await self._gate_call(handle, tool_id, server_id, tool_name, capabilities)
+        if gate is not None:
+            return gate
+        assert handle is not None
         try:
             session = await handle.ensure_open(self._opener)
             # asyncio.wait_for cancels the inner task on timeout but does
@@ -159,6 +172,49 @@ class MCPToolBackend(ToolBackend):
     async def aclose(self) -> None:
         for handle in self._handles.values():
             await handle.aclose()
+
+    async def _gate_call(
+        self,
+        handle: _ServerHandle | None,
+        tool_id: str,
+        server_id: str,
+        tool_name: str,
+        capabilities: frozenset[str] | None,
+    ) -> ToolResult | None:
+        """Pre-dispatch checks: server, allowlist, mutator capability.
+
+        Returns a ``ToolResult`` if the call should be denied, or
+        ``None`` if it can proceed. Mutator gating per ADR-0016 §3.2.
+        """
+
+        if handle is None:
+            return ToolResult(
+                tool_id=tool_id,
+                status="failure",
+                error=f"unknown MCP server_id {server_id!r}",
+            )
+        if handle.allowlist is not None and tool_name not in handle.allowlist:
+            return ToolResult(
+                tool_id=tool_id,
+                status="failure",
+                error=f"tool {tool_name!r} blocked by allowlist on {server_id!r}",
+            )
+        try:
+            manifest = await handle.get_manifest(self._opener, tool_id)
+        except (MCPBackendError, RuntimeError, OSError) as exc:
+            return ToolResult(tool_id=tool_id, status="failure", error=str(exc))
+        if manifest is not None and manifest.mutability == "mutator":
+            granted = capabilities or frozenset()
+            if tool_id not in granted:
+                return ToolResult(
+                    tool_id=tool_id,
+                    status="failure",
+                    error=(
+                        f"mutator tool {tool_id!r} requires capability grant; "
+                        f"caller has {sorted(granted)!r}"
+                    ),
+                )
+        return None
 
     @staticmethod
     def _parse_tool_id(tool_id: str) -> tuple[str, str]:
