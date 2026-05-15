@@ -11,10 +11,23 @@ Design:
 * Success = `ResultMessage.subtype == "success"` and `not is_error`.
 * Canonical text output = `ResultMessage.result` (fallback to concatenated
   `TextBlock.text` from assistant messages).
+
+Subprocess environment policy (ADR-0029)
+----------------------------------------
+``ClaudeBackendConfig.env`` is the explicit pass-through for any subprocess
+the Claude Agent SDK spawns on our behalf. The default is **drop-all**: only
+keys the operator names in ``env`` (plus ``PATH`` from the parent process,
+which is required for CLI shims) reach the child. Previously an empty
+``env`` resolved to ``None`` and re-enabled the SDK's inherit-all default;
+that behavior was a cross-tenant credential leak in multi-tenant
+deployments and was removed alongside the matching MCP stdio fix. Operators
+that need vendor keys (``ANTHROPIC_API_KEY``, etc.) must declare them
+explicitly in ``ClaudeBackendConfig.env``.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +47,31 @@ _INSTALL_HINT = (
     "claude-agent-sdk is not installed. Add the 'claude' extra: "
     "`uv add 'vigor-backend-claude-agent-sdk[claude]'`."
 )
+
+# Parent-environment keys forwarded to subprocesses spawned by the Claude
+# Agent SDK by default. Mirrors :data:`vigor_mcp.transports.sdk._DEFAULT_PASS_THROUGH`
+# (ADR-0029): PATH only — CLI shims need it; everything else the operator
+# declares explicitly in :class:`ClaudeBackendConfig.env`. Adding a key here
+# widens the default contract for every operator and requires an ADR amendment.
+_DEFAULT_PASS_THROUGH: tuple[str, ...] = ("PATH",)
+
+
+def _build_subprocess_env(spec_env: dict[str, str]) -> dict[str, str]:
+    """Build the subprocess environment for the Claude SDK (ADR-0029).
+
+    Always returns a concrete dict. Callers must not pass ``None`` to the
+    SDK's ``env`` parameter, because that re-enables the SDK's inherit-all
+    default and re-opens the cross-tenant leak. An empty dict is the safe
+    state when the operator has no env to declare and the parent has no
+    pass-through key set.
+    """
+
+    env: dict[str, str] = dict(spec_env)
+    for key in _DEFAULT_PASS_THROUGH:
+        parent_value = os.environ.get(key)
+        if parent_value is not None:
+            env.setdefault(key, parent_value)
+    return env
 
 
 @dataclass(slots=True)
@@ -81,7 +119,7 @@ class ClaudeAgentBackend(AgentBackend):
             disallowed_tools=list(self._config.disallowed_tools),
             setting_sources=list(self._config.setting_sources),
             cwd=self._config.cwd,
-            env=dict(self._config.env) if self._config.env else None,
+            env=_build_subprocess_env(self._config.env),
         )
 
     async def _run(self, prompt: str, system_prompt: str) -> tuple[bool, str]:

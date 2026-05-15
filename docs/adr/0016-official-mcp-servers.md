@@ -76,6 +76,43 @@ Timeouts are enforced via `asyncio.wait_for` at the `ToolBackend.call_tool` boun
 
 7. **Vendor auth and rotation.** All API keys (Anthropic, Gemini/Vertex, GLM/Doubao/Hunyuan via `luma-mcp`, the VideoScore2 wrap's API key) live in agent env, never on disk in artifacts. Recommended rotation: monthly for vendor critic keys, per-environment for the VideoScore2 wrap.
 
+### Migration: explicit env keys per stdio server (ADR-0029 hardening)
+
+ADR-0029 changed the stdio subprocess env default from inherit-all-from-parent
+to drop-all-with-PATH-passthrough. Every officially-supported stdio server
+that previously relied on inherited vendor keys must now declare those keys
+explicitly in its `MCPServerSpec.env`. This table is the authoritative list;
+servers absent from it require no env keys (they are local-only with no auth
+surface) and the default empty `env = {}` plus the implicit `PATH`
+pass-through is sufficient.
+
+| Server | Required `MCPServerSpec.env` keys | Notes |
+| --- | --- | --- |
+| `tan-yong-sheng/ai-vision-mcp` | `GEMINI_API_KEY` (or the Vertex SA key set: `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`) | Pick one auth path. Vertex SA path also needs `PATH` if `gcloud` is invoked at startup — already covered by the default pass-through. |
+| `JochenYang/luma-mcp` | One of `ZHIPU_API_KEY`, `SILICONFLOW_API_KEY`, `DASHSCOPE_API_KEY` (depending on the configured provider) | Whichever provider the operator selects per `luma-mcp`'s config; declare only the keys for the providers actually enabled. |
+| `neka-nat/freecad-mcp` | (none) | Local XML-RPC bridge; no vendor auth. |
+| `quellant/openscad-mcp` | (none) | Local-only. |
+| In-adapter `trimesh` wrap | (none) | Local-only. |
+| `hlpsxc/video-quality-mcp` | (none) | Local-only (libvmaf/ffprobe). |
+
+Additional notes:
+
+* **Claude Vision** is in-process, not stdio; it reads `ANTHROPIC_API_KEY`
+  from the agent process's own env, *not* from a subprocess env. ADR-0029's
+  hardening does not affect that path.
+* **VideoScore2 wrap** uses http/sse transport. Its `Authorization: Bearer`
+  token rides on `MCPServerSpec.headers`, not `env`; the schema validator
+  enforces empty `env` for non-stdio transports.
+* **`PATH` is already passed through.** Operators do not need to declare
+  `PATH` themselves unless they want to pin a specific value (e.g. a
+  sandbox-only `PATH` for hosted multi-tenant deployments — ADR-0029
+  §Consequence-Negative-3 calls this out as the recommended posture).
+* **Failure mode is loud.** A server that needs a key missing from
+  `spec.env` will fail with a missing-key error from the server itself
+  (typically on first tool call or initialization), not silently. The
+  migration is therefore visible: the operator sees the error and adds
+  the key to `spec.env`.
+
 ### Definition of "official support"
 
 A server is officially supported when, and only when, all five criteria hold:
