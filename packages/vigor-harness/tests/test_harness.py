@@ -36,6 +36,7 @@ async def test_evaluate_candidate_over_split(tmp_path: Path) -> None:
         hypothesis="toy backend should pass toy adapter",
         adapter_factory="vigor_harness.testing:toy_adapter_factory",
         backend_factory="vigor_harness.testing:toy_backend_factory",
+        allowed_factory_prefixes=["vigor_harness"],
     )
     result = await evaluate_candidate(candidate, split, tmp_path / "meta_runs")
     assert result.report.n_tasks == 2
@@ -58,6 +59,25 @@ async def test_evaluate_candidate_rejects_untrusted_factory_prefix(tmp_path: Pat
         hypothesis="should be rejected",
         adapter_factory="os:path",
         backend_factory="vigor_harness.testing:toy_backend_factory",
+        allowed_factory_prefixes=["vigor_harness"],
+    )
+    with pytest.raises(ValueError, match="allowed prefixes"):
+        await evaluate_candidate(candidate, split, tmp_path / "meta_runs")
+
+
+@pytest.mark.asyncio
+async def test_evaluate_candidate_rejects_typosquat_prefix(tmp_path: Path) -> None:
+    split = SplitManifest(
+        split_id="toy.search.v1",
+        role="search",
+        task_uris=[_write_task(tmp_path / "task.json", "harness_task_1", "hello")],
+    )
+    candidate = HarnessCandidate(
+        candidate_id="typosquat_candidate",
+        hypothesis="substring-prefix should not satisfy namespace boundary",
+        adapter_factory="vigor_harness_evil.foo:bar",
+        backend_factory="vigor_harness.testing:toy_backend_factory",
+        allowed_factory_prefixes=["vigor_harness"],
     )
     with pytest.raises(ValueError, match="allowed prefixes"):
         await evaluate_candidate(candidate, split, tmp_path / "meta_runs")
