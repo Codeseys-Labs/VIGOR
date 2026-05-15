@@ -78,12 +78,20 @@ class Orchestrator:
         archive: RunArchive,
         policy: ScoringPolicy | None = None,
         tools: ToolBackend | None = None,
+        tool_capabilities: frozenset[str] | None = None,
     ) -> None:
         self._adapter = adapter
         self._backend = backend
         self._archive = archive
         self._policy = policy or ScoringPolicy(policy_id="default.v1")
         self._tools = tools
+        # Per ADR-0016 §3.2: orchestrator issues mutator capabilities
+        # for the run. Default-empty means observer-only access; a
+        # configuration / policy layer is responsible for granting
+        # mutator tool ids when they are required for the task.
+        self._tool_capabilities: frozenset[str] = (
+            frozenset(tool_capabilities) if tool_capabilities is not None else frozenset()
+        )
 
     async def run(self, task: TaskSpec) -> RunResult:
         run_id = task.task_id
@@ -106,6 +114,7 @@ class Orchestrator:
                 run_dir=str(self._archive.run_dir(run_id)),
                 task=task,
                 tools=self._tools,
+                tool_capabilities=self._tool_capabilities,
             )
             plan = await self._adapter.plan_representation(task)
             prior: list[ArtifactIR] = []

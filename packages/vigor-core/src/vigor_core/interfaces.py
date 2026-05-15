@@ -32,6 +32,13 @@ class RunContext:
     bridge) made available to adapters that want to call out to MCP
     servers configured at the agent level. Adapters that don't need it
     can ignore the field; existing adapters continue to work unchanged.
+
+    ``tool_capabilities`` is the set of tool ids this run is authorized
+    to invoke as a mutator (ADR-0016 §3.2). Observer tools are always
+    callable. Mutator tools require their ``tool_id`` to be present in
+    this frozenset; the orchestrator (or a later policy layer) is
+    responsible for issuing capabilities. Default is empty, i.e.
+    default-deny for every mutator.
     """
 
     run_id: str
@@ -40,6 +47,7 @@ class RunContext:
     iteration: int = 0
     extras: dict[str, Any] = field(default_factory=dict)
     tools: ToolBackend | None = None
+    tool_capabilities: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(slots=True)
@@ -141,10 +149,24 @@ class AgentBackend(abc.ABC):
 
 
 class ToolBackend(abc.ABC):
-    """Exposes typed tool invocation."""
+    """Exposes typed tool invocation.
+
+    ``call_tool`` accepts an optional ``capabilities`` frozenset of
+    tool ids the caller is authorized to invoke as mutators
+    (ADR-0016 §3.2). Backends that surface mutator tools (currently
+    `MCPToolBackend`) reject mutator calls whose ``tool_id`` is not
+    present in ``capabilities``. ``None`` is treated identically to an
+    empty frozenset (fail-closed).
+    """
 
     @abc.abstractmethod
-    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> ToolResult: ...
+    async def call_tool(
+        self,
+        tool_id: str,
+        payload: dict[str, Any],
+        *,
+        capabilities: frozenset[str] | None = None,
+    ) -> ToolResult: ...
 
     @abc.abstractmethod
     async def list_tools(self) -> list[ToolManifest]: ...

@@ -161,7 +161,13 @@ class _SpyTools(ToolBackend):
     def __init__(self) -> None:
         self.closed = 0
 
-    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> ToolResult:
+    async def call_tool(
+        self,
+        tool_id: str,
+        payload: dict[str, Any],
+        *,
+        capabilities: frozenset[str] | None = None,
+    ) -> ToolResult:
         return ToolResult(tool_id=tool_id, status="success")
 
     async def list_tools(self) -> list[ToolManifest]:

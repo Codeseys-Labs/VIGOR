@@ -71,7 +71,13 @@ class EchoAgentBackend(AgentBackend):
 class NullToolBackend(ToolBackend):
     """Tool backend that exposes no tools."""
 
-    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> ToolResult:
+    async def call_tool(
+        self,
+        tool_id: str,
+        payload: dict[str, Any],
+        *,
+        capabilities: frozenset[str] | None = None,
+    ) -> ToolResult:
         return ToolResult(tool_id=tool_id, status="failure", error="no tools registered")
 
     async def list_tools(self) -> list[ToolManifest]:
