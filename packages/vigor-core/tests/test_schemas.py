@@ -20,6 +20,7 @@ from vigor_core.schemas import (
     ProvenanceRecord,
     ReviewReport,
     TaskSpec,
+    Usage,
 )
 from vigor_core.schemas import (
     RuntimeErrorRecord as VigorRuntimeError,
@@ -184,3 +185,32 @@ def test_roundtrip_stable_json() -> None:
     one = task.model_dump_json(by_alias=True)
     two = TaskSpec.model_validate_json(one).model_dump_json(by_alias=True)
     assert json.loads(one) == json.loads(two)
+
+
+def test_usage_defaults_zero_and_unpriced() -> None:
+    usage = Usage()
+    _roundtrip(usage)
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
+    assert usage.usd is None
+    assert usage.schema_version == "vigor.usage.v1"
+
+
+def test_usage_carries_priced_telemetry() -> None:
+    usage = Usage(input_tokens=1234, output_tokens=567, usd=0.0421)
+    _roundtrip(usage)
+    payload = usage.model_dump(by_alias=True, mode="json")
+    assert payload["inputTokens"] == 1234
+    assert payload["outputTokens"] == 567
+    assert payload["usd"] == 0.0421
+
+
+def test_provenance_record_accepts_cost_exceeded_stop_reason() -> None:
+    record = ProvenanceRecord(
+        provenance_id="prov_cost",
+        run_id="run_cost",
+        task_id="task_cost",
+        stop_reason="cost_exceeded",
+    )
+    _roundtrip(record)
+    assert record.stop_reason == "cost_exceeded"

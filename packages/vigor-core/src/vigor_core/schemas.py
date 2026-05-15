@@ -120,11 +120,27 @@ class ArtifactIR(_VigorBase):
 StopReason = Literal[
     "accepted",
     "budget_exhausted",
+    "cost_exceeded",
     "plateau",
     "human_selected",
     "failed",
     "escalated",
 ]
+
+
+class Usage(_VigorBase):
+    """Per-backend token / cost telemetry surfaced via ``AgentBackend.usage()``.
+
+    ``usd`` is ``None`` when the backend cannot self-price (e.g. token counts
+    only, no pricing table). ADR-0028 documents this as "fall open" — a
+    ``RunBudgetTracker`` configured with ``max_cost_usd`` cannot enforce the
+    ceiling against a backend that reports ``usd=None``.
+    """
+
+    schema_version: Literal["vigor.usage.v1"] = "vigor.usage.v1"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    usd: float | None = None
 
 
 class ObservableArtifact(_VigorBase):

@@ -11,7 +11,7 @@ import asyncio
 import contextlib
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from vigor_core.archive import RunArchive
 from vigor_core.errors import VigorError
@@ -37,6 +37,7 @@ from vigor_core.schemas import (
     RuntimeErrorRecord,
     StopReason,
     TaskSpec,
+    Usage,
 )
 from vigor_core.scoring import (
     AdjudicationInputs,
@@ -46,6 +47,8 @@ from vigor_core.scoring import (
     select_best,
 )
 from vigor_core.util import utcnow_iso
+
+from vigor_runtime.budget import RunBudgetTracker
 
 
 @dataclass(slots=True)
@@ -65,6 +68,7 @@ class RunResult:
     selected_candidate_id: str | None
     export_bundle: ExportBundle | None
     provenance: ProvenanceRecord
+    usage: Usage = field(default_factory=Usage)
 
 
 class Orchestrator:
@@ -98,6 +102,8 @@ class Orchestrator:
         accepted = False
         fatal_error: RuntimeErrorRecord | None = None
 
+        budget_tracker = RunBudgetTracker(self._backend, task.budgets)
+
         try:
             manifest = await self._adapter.describe_capabilities()
             self._archive.write_manifest(run_id, manifest)
@@ -115,6 +121,9 @@ class Orchestrator:
                 context.iteration = iteration
                 if time.monotonic() - started > task.budgets.max_wall_clock_s:
                     stop_reason = "budget_exhausted"
+                    break
+                if await budget_tracker.check():
+                    stop_reason = "cost_exceeded"
                     break
 
                 candidates = await self._candidate_batch(task, plan, prior, current_ir, activities)
@@ -211,6 +220,8 @@ class Orchestrator:
             stop_reason = "failed"
         finally:
             with contextlib.suppress(Exception):
+                await budget_tracker.snapshot()
+            with contextlib.suppress(Exception):
                 await self._backend.aclose()
 
         frontier = build_frontier(
@@ -247,6 +258,7 @@ class Orchestrator:
             selected_candidate_id=selected_candidate_id,
             export_bundle=last_export,
             provenance=provenance,
+            usage=budget_tracker.latest,
         )
 
     async def _candidate_batch(

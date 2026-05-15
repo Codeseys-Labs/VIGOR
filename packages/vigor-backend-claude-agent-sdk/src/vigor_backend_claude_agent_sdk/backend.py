@@ -27,7 +27,7 @@ from vigor_core.interfaces import (
     ReviewRequest,
     ReviewResult,
 )
-from vigor_core.schemas import ArtifactIR, PatchPlan, ReviewReport
+from vigor_core.schemas import ArtifactIR, PatchPlan, ReviewReport, Usage
 from vigor_core.util import utcnow_iso
 
 _INSTALL_HINT = (
@@ -58,6 +58,10 @@ class ClaudeAgentBackend(AgentBackend):
 
     def __init__(self, config: ClaudeBackendConfig | None = None) -> None:
         self._config = config or ClaudeBackendConfig()
+        self._input_tokens: int = 0
+        self._output_tokens: int = 0
+        self._usd: float = 0.0
+        self._priced: bool = False
 
     def _import_sdk(self) -> Any:
         try:
@@ -90,9 +94,36 @@ class ClaudeAgentBackend(AgentBackend):
                     if isinstance(block, sdk.TextBlock):
                         fallback.append(block.text)
             elif isinstance(msg, sdk.ResultMessage):
+                self._accumulate_usage(msg)
                 ok = msg.subtype == "success" and not msg.is_error
                 return ok, (msg.result or "".join(fallback))
         return False, "".join(fallback)
+
+    def _accumulate_usage(self, msg: Any) -> None:
+        """Roll the per-call ResultMessage telemetry into running totals.
+
+        ``ResultMessage.usage`` is a dict-like mapping of token counters
+        (``input_tokens``, ``output_tokens`` and cache variants); we sum
+        the two top-level counters across calls. ``total_cost_usd`` is
+        the SDK-priced run cost — we mark the backend as "priced" the
+        first time we see one so :meth:`usage` can decide whether to
+        report ``usd`` or fall open with ``None``.
+        """
+        usage = getattr(msg, "usage", None)
+        if isinstance(usage, dict):
+            self._input_tokens += int(usage.get("input_tokens", 0) or 0)
+            self._output_tokens += int(usage.get("output_tokens", 0) or 0)
+        cost = getattr(msg, "total_cost_usd", None)
+        if cost is not None:
+            self._priced = True
+            self._usd += float(cost)
+
+    async def usage(self) -> Usage:
+        return Usage(
+            input_tokens=self._input_tokens,
+            output_tokens=self._output_tokens,
+            usd=self._usd if self._priced else None,
+        )
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
         prompt = (

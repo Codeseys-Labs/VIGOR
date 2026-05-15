@@ -32,6 +32,7 @@ from vigor_core.schemas import (
     ReviewReport,
     TaskSpec,
     ToolManifest,
+    Usage,
 )
 from vigor_core.scoring import ScoringPolicy
 from vigor_runtime.backends import EchoAgentBackend
@@ -446,6 +447,115 @@ async def test_runtime_orchestrator_does_not_close_injected_tools(tmp_path: Path
     )
     await orchestrator.run(task2)
     assert tools.aclose_calls == 0
+
+
+class _CostlyBackend(EchoAgentBackend):
+    """Echo backend that reports a scripted usage curve.
+
+    Iteration N returns ``usd = (N+1) * per_iter_usd`` so callers can
+    bound the iteration on which the ceiling is crossed.
+    """
+
+    def __init__(self, per_iter_usd: float) -> None:
+        super().__init__(seed_ir_factory=_seed_with_goal)
+        self._per_iter = per_iter_usd
+        self._calls = 0
+
+    async def usage(self) -> Usage:
+        self._calls += 1
+        return Usage(
+            input_tokens=100 * self._calls,
+            output_tokens=50 * self._calls,
+            usd=self._per_iter * self._calls,
+        )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stops_on_cost_ceiling(tmp_path: Path) -> None:
+    """A backend that crosses ``max_cost_usd`` triggers ``stop_reason=cost_exceeded``."""
+
+    archive = RunArchive(tmp_path)
+
+    class _NeverAcceptAdapter(ToyTextAdapter):
+        async def review(
+            self,
+            artifact: ObservableArtifact,
+            ir: ArtifactIR,
+            context: RunContext,
+        ) -> list[ReviewReport]:
+            reports = await super().review(artifact, ir, context)
+            for report in reports:
+                report.scores["quality"] = 0.0
+                report.passed = False
+                report.recommended_action = "patch"
+            return reports
+
+    backend = _CostlyBackend(per_iter_usd=2.0)
+    orchestrator = Orchestrator(
+        adapter=_NeverAcceptAdapter(),
+        backend=backend,
+        archive=archive,
+        policy=ScoringPolicy(policy_id="strict", minimums={"quality": 0.5}),
+    )
+
+    task = TaskSpec(
+        task_id="t_cost_cap",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=10, max_candidates=1, max_cost_usd=5.0),
+    )
+    result = await orchestrator.run(task)
+
+    assert result.stop_reason == "cost_exceeded"
+    assert result.accepted is False
+    assert result.usage.usd is not None
+    assert result.usage.usd >= 5.0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_unset_max_cost_usd_does_not_short_circuit(tmp_path: Path) -> None:
+    """When ``max_cost_usd`` is unset, even an expensive backend runs to completion."""
+
+    archive = RunArchive(tmp_path)
+    backend = _CostlyBackend(per_iter_usd=999.99)
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=backend,
+        archive=archive,
+    )
+    task = TaskSpec(
+        task_id="t_no_cost_cap",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    result = await orchestrator.run(task)
+
+    assert result.stop_reason == "accepted"
+    assert result.accepted is True
+    # Usage is surfaced even without enforcement so operators can audit spend.
+    assert result.usage.usd is not None
+    assert result.usage.usd > 0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_default_backend_reports_zero_usage(tmp_path: Path) -> None:
+    """Backends inheriting the ABC default ``usage()`` surface zero on RunResult."""
+
+    archive = RunArchive(tmp_path)
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    orchestrator = Orchestrator(adapter=ToyTextAdapter(), backend=backend, archive=archive)
+    task = TaskSpec(
+        task_id="t_default_usage",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    result = await orchestrator.run(task)
+    assert result.accepted is True
+    assert result.usage.input_tokens == 0
+    assert result.usage.output_tokens == 0
+    assert result.usage.usd is None
 
 
 @pytest.mark.asyncio
