@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "vigor.task.v1",
+  "taskId": "demo_video_0001",
+  "goal": "Render a placeholder Manim scene",
+  "modalities": ["video_manim"],
+  "budgets": {"maxIterations": 1, "maxCandidates": 1}
+}
