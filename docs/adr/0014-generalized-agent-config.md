@@ -37,7 +37,9 @@ and a thin `vigor-agent` package that consumes it.
 
 1. `load_agent_config(path)` for YAML / JSON.
 2. `AdapterRegistry.from_config(cfg)` — eager factory resolution under
-   the `allowed_prefixes` supply-chain guard.
+   the `allowed_prefixes` namespace assertion + dotted-component prefix
+   match (typosquat-resistant; the host config also gates plugin-supplied
+   prefixes via `allowed_plugin_factory_prefixes`).
 3. `Router(policy, registry).resolve(task)`.
 4. `AgentOrchestrator(cfg)` — constructs a single agent that, per run,
    picks an adapter and instantiates a fresh backend, delegating to the

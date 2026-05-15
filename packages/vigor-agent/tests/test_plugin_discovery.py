@@ -106,3 +106,79 @@ def test_real_photo_adapter_plugin_directory(tmp_path: Path) -> None:
     assert (plugin.skills_dir / "photo-edit-recipe" / "SKILL.md").exists()
     assert plugin.factory is not None
     assert plugin.factory.factory == "vigor_adapter_photo.adapter:PhotoEditingAdapter"
+
+
+def test_adapter_spec_from_plugin_rejects_unallowed_plugin_prefix(tmp_path: Path) -> None:
+    """A plugin self-declaring `os` as allowed_prefixes must be rejected by the host gate."""
+
+    _write_plugin(
+        tmp_path,
+        manifest={"name": "vigor-adapter-evil"},
+        factory={
+            "factory": "os.path:join",
+            "allowedPrefixes": ["os"],
+        },
+    )
+    plugin = load_plugin_directory(tmp_path)
+    with pytest.raises(PluginDiscoveryError, match="plugin-supplied prefix 'os'"):
+        adapter_spec_from_plugin(
+            plugin,
+            adapter_id="adapter_evil",
+            host_allowed_prefixes=["vigor_runtime", "vigor_adapter_photo"],
+        )
+
+
+def test_adapter_spec_from_plugin_accepts_host_allowed_prefix(tmp_path: Path) -> None:
+    """A plugin within the host's allowed namespaces is admitted."""
+
+    _write_plugin(
+        tmp_path,
+        manifest={"name": "vigor-adapter-good"},
+        factory={
+            "factory": "vigor_runtime.toy_adapter:ToyTextAdapter",
+            "allowedPrefixes": ["vigor_runtime"],
+        },
+    )
+    plugin = load_plugin_directory(tmp_path)
+    spec = adapter_spec_from_plugin(
+        plugin,
+        adapter_id="adapter_ok",
+        host_allowed_prefixes=["vigor_runtime"],
+    )
+    assert spec.factory.factory == "vigor_runtime.toy_adapter:ToyTextAdapter"
+
+
+def test_adapter_spec_from_plugin_empty_host_allowlist_is_rejection(tmp_path: Path) -> None:
+    """An empty host allowlist means 'no plugins'; passing one rejects all plugins."""
+
+    _write_plugin(
+        tmp_path,
+        manifest={"name": "vigor-adapter-good"},
+        factory={
+            "factory": "vigor_runtime.toy_adapter:ToyTextAdapter",
+            "allowedPrefixes": ["vigor_runtime"],
+        },
+    )
+    plugin = load_plugin_directory(tmp_path)
+    with pytest.raises(PluginDiscoveryError, match="host has no allowed_plugin_factory_prefixes"):
+        adapter_spec_from_plugin(plugin, adapter_id="adapter_ok", host_allowed_prefixes=[])
+
+
+def test_adapter_spec_from_plugin_rejects_plugin_typosquat(tmp_path: Path) -> None:
+    """The host gate uses dotted-component matching: `vigor_runtime_evil` does NOT pass."""
+
+    _write_plugin(
+        tmp_path,
+        manifest={"name": "vigor-adapter-squat"},
+        factory={
+            "factory": "vigor_runtime_evil.backends:EchoAgentBackend",
+            "allowedPrefixes": ["vigor_runtime_evil"],
+        },
+    )
+    plugin = load_plugin_directory(tmp_path)
+    with pytest.raises(PluginDiscoveryError, match="plugin-supplied prefix"):
+        adapter_spec_from_plugin(
+            plugin,
+            adapter_id="adapter_squat",
+            host_allowed_prefixes=["vigor_runtime"],
+        )

@@ -19,14 +19,19 @@ class FactoryLoadError(RuntimeError):
 def load_factory(ref: FactoryRef) -> Any:
     """Resolve a `FactoryRef` to its underlying callable.
 
-    The factory's module must start with one of the declared
-    ``allowed_prefixes`` — supply-chain guard.
+    The factory's module must satisfy a dotted-component prefix match
+    against one of the declared ``allowed_prefixes`` — namespace
+    assertion to prevent typosquat imports (e.g. ``vigor_runtime_evil``
+    must not satisfy a ``vigor_runtime`` prefix).
     """
 
     module_name, _, attr = ref.factory.partition(":")
     if not module_name or not attr:
         raise FactoryLoadError(f"factory must be 'module:attr', got {ref.factory!r}")
-    if not any(module_name.startswith(prefix) for prefix in ref.allowed_prefixes):
+    if not any(
+        module_name == prefix or module_name.startswith(prefix + ".")
+        for prefix in ref.allowed_prefixes
+    ):
         raise FactoryLoadError(
             f"factory module {module_name!r} is not in allowed prefixes {ref.allowed_prefixes!r}"
         )

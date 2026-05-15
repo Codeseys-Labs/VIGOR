@@ -15,6 +15,9 @@ from vigor_core.agent_config import MCPServerSpec
 if TYPE_CHECKING:  # pragma: no cover - only for type checkers
     from mcp import ClientSession
 
+# Minimum tuple length for streamablehttp_client returning at least (read, write).
+_MIN_STREAMABLEHTTP_TUPLE = 2
+
 
 async def open_session(spec: MCPServerSpec, stack: AsyncExitStack) -> ClientSession:
     """Open an `mcp.ClientSession` over the transport declared in ``spec``.
@@ -32,6 +35,8 @@ async def open_session(spec: MCPServerSpec, stack: AsyncExitStack) -> ClientSess
     if spec.transport == "stdio":
         if not spec.command:
             raise ValueError("stdio MCPServerSpec requires a command")
+        if spec.headers:
+            raise ValueError("stdio MCPServerSpec must not declare headers")
         params = StdioServerParameters(
             command=spec.command[0],
             args=list(spec.command[1:]),
@@ -43,18 +48,29 @@ async def open_session(spec: MCPServerSpec, stack: AsyncExitStack) -> ClientSess
 
         if not spec.url:
             raise ValueError("sse MCPServerSpec requires a url")
+        if spec.env:
+            raise ValueError("sse MCPServerSpec must not declare env")
         read, write = await stack.enter_async_context(
-            sse_client(url=spec.url, headers=dict(spec.headers) or None)
+            sse_client(url=spec.url, headers=dict(spec.headers) if spec.headers else None)
         )
     elif spec.transport == "http":
         from mcp.client.streamable_http import streamablehttp_client
 
         if not spec.url:
             raise ValueError("http MCPServerSpec requires a url")
+        if spec.env:
+            raise ValueError("http MCPServerSpec must not declare env")
         ctx = await stack.enter_async_context(
-            streamablehttp_client(url=spec.url, headers=dict(spec.headers) or None)
+            streamablehttp_client(
+                url=spec.url, headers=dict(spec.headers) if spec.headers else None
+            )
         )
         # streamablehttp_client returns (read, write, session_callback).
+        # Tolerate both the 2-tuple legacy shape and the 3-tuple current shape.
+        if not isinstance(ctx, tuple) or len(ctx) < _MIN_STREAMABLEHTTP_TUPLE:
+            raise ValueError(
+                f"streamablehttp_client returned unexpected shape {type(ctx).__name__}"
+            )
         read, write = ctx[0], ctx[1]
     else:
         raise ValueError(f"unsupported transport {spec.transport!r}")

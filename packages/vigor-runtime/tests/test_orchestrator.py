@@ -401,3 +401,65 @@ async def test_orchestrator_converts_compile_exception_to_failure(tmp_path: Path
     assert compile_result_json["status"] == "failure"
     assert compile_result_json["errors"]
     assert compile_result_json["errors"][0]["type"] == "compile_error"
+
+
+class _CountingToolBackend(ToolBackend):
+    """A ToolBackend that records how many times aclose is invoked."""
+
+    def __init__(self) -> None:
+        self.aclose_calls = 0
+
+    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
+        return _ToolResult(tool_id=tool_id, status="success", output={})
+
+    async def list_tools(self) -> list[ToolManifest]:
+        return []
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_orchestrator_does_not_close_injected_tools(tmp_path: Path) -> None:
+    """Tool backends are owned by the agent layer; runtime must NOT close them."""
+
+    archive = RunArchive(tmp_path)
+    tools = _CountingToolBackend()
+    adapter = ToyTextAdapter()
+    backend = EchoAgentBackend(seed_ir_factory=_seed_with_goal)
+    orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive, tools=tools)
+    task = TaskSpec(
+        task_id="t_tools_lifetime",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task)
+    # First run does NOT close tools (ownership lives with AgentOrchestrator)
+    assert tools.aclose_calls == 0
+    # A second run reuses the same tools instance unchanged
+    task2 = TaskSpec(
+        task_id="t_tools_lifetime_2",
+        goal="hello again",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    await orchestrator.run(task2)
+    assert tools.aclose_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_backend_aclose_default_is_noop() -> None:
+    """The default ``aclose`` on ToolBackend is callable and returns None."""
+
+    class _MinimalTools(ToolBackend):
+        async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> _ToolResult:
+            return _ToolResult(tool_id=tool_id, status="success", output={})
+
+        async def list_tools(self) -> list[ToolManifest]:
+            return []
+
+    tools = _MinimalTools()
+    # Default aclose is a no-op coroutine inherited from the ABC.
+    result = await tools.aclose()
+    assert result is None

@@ -86,3 +86,20 @@ def test_export_skill_md_unknown_schema_raises() -> None:
     )
     with pytest.raises(KeyError):
         export_skill_md(template)
+
+
+def test_manifest_allows_unknown_keys_for_forward_compat() -> None:
+    """Open Plugin Spec evolves; unknown keys should be preserved, not rejected."""
+
+    payload = {
+        "name": "vigor-adapter-demo",
+        "version": "0.1.0",
+        "futureCustomKey": {"some": "value"},
+        "anotherUnknown": ["a", "b"],
+    }
+    manifest = OpenPluginManifest.model_validate(payload)
+    assert manifest.name == "vigor-adapter-demo"
+    # Pydantic exposes unknown keys via model_extra
+    assert manifest.model_extra is not None
+    assert manifest.model_extra.get("futureCustomKey") == {"some": "value"}
+    assert manifest.model_extra.get("anotherUnknown") == ["a", "b"]

@@ -22,7 +22,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from vigor_core.registry import export_json_schema, get_ir_model
 from vigor_core.schemas import _VigorBase
@@ -32,9 +32,24 @@ class OpenPluginManifest(_VigorBase):
     """Open Plugin Spec v1 manifest core fields.
 
     Per the spec, only ``name`` is required. Extended component types
-    (commands, agents, rules, hooks, lspServers, outputStyles) are not
-    required for v1 conformance and are kept open via ``model_config``.
+    (commands, agents, rules, hooks, lspServers, outputStyles) are
+    declared explicitly so they round-trip with their camelCase aliases.
+
+    Open Plugin Spec is a living, multi-vendor spec — vendors add new
+    component types between releases. The model overrides
+    ``extra="allow"`` so unknown manifest keys are preserved instead
+    of rejected, keeping VIGOR forward-compatible with future spec
+    revisions without code changes.
     """
+
+    model_config = ConfigDict(
+        strict=True,
+        extra="allow",
+        populate_by_name=True,
+        alias_generator=_VigorBase.model_config["alias_generator"],
+        from_attributes=False,
+        frozen=False,
+    )
 
     name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9.\-]*$")
     version: str | None = None

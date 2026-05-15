@@ -11,6 +11,7 @@ from vigor_core.agent_config import (
     FactoryRef,
     MCPServerSpec,
     RoutingPolicy,
+    assert_factory_ref_allowed,
 )
 
 
@@ -176,3 +177,131 @@ def test_timeout_must_be_positive() -> None:
             command=["x"],
             timeout_s=0,
         )
+
+
+def test_stdio_mcp_rejects_headers() -> None:
+    """``headers`` is an http/sse concept; declaring it on stdio is misconfig."""
+
+    with pytest.raises(ValidationError, match="stdio transport must not set headers"):
+        MCPServerSpec(
+            server_id="bad",
+            transport="stdio",
+            command=["x"],
+            headers={"Authorization": "Bearer x"},
+        )
+
+
+def test_http_mcp_rejects_env() -> None:
+    """``env`` is a stdio subprocess concept; declaring it on http is misconfig."""
+
+    with pytest.raises(ValidationError, match="http transport must not set env"):
+        MCPServerSpec(
+            server_id="bad",
+            transport="http",
+            url="https://example.com/mcp",
+            env={"API_KEY": "x"},
+        )
+
+
+def test_sse_mcp_rejects_env() -> None:
+    """``env`` is a stdio subprocess concept; declaring it on sse is misconfig."""
+
+    with pytest.raises(ValidationError, match="sse transport must not set env"):
+        MCPServerSpec(
+            server_id="bad",
+            transport="sse",
+            url="https://example.com/mcp",
+            env={"API_KEY": "x"},
+        )
+
+
+def test_routing_single_requires_exactly_one_enabled_adapter() -> None:
+    """``strategy='single'`` must have one and only one enabled adapter."""
+
+    base = AdapterSpec(
+        adapter_id="adapter_other",
+        factory=FactoryRef(factory="pkg.mod:Cls", allowed_prefixes=["pkg"]),
+    )
+    a = base.model_copy(update={"adapter_id": "adapter_a"})
+    b = base.model_copy(update={"adapter_id": "adapter_b"})
+    with pytest.raises(ValidationError, match="strategy='single' requires exactly one"):
+        _toy_config(adapters=[a, b], routing=RoutingPolicy(strategy="single"))
+
+
+def test_routing_single_with_one_disabled_adapter_passes() -> None:
+    """Two adapters but only one enabled satisfies 'single' strategy."""
+
+    first = AdapterSpec(
+        adapter_id="adapter_only",
+        factory=FactoryRef(factory="pkg.mod:Cls", allowed_prefixes=["pkg"]),
+    )
+    disabled = AdapterSpec(
+        adapter_id="adapter_disabled",
+        factory=FactoryRef(factory="pkg.mod:Other", allowed_prefixes=["pkg"]),
+        enabled=False,
+    )
+    cfg = _toy_config(adapters=[first, disabled], routing=RoutingPolicy(strategy="single"))
+    assert cfg.routing.strategy == "single"
+
+
+def test_routing_single_with_zero_enabled_adapter_rejected() -> None:
+    """Zero enabled adapters fails the 'single' strategy invariant."""
+
+    disabled = AdapterSpec(
+        adapter_id="adapter_disabled",
+        factory=FactoryRef(factory="pkg.mod:Cls", allowed_prefixes=["pkg"]),
+        enabled=False,
+    )
+    with pytest.raises(ValidationError, match="strategy='single' requires exactly one"):
+        _toy_config(adapters=[disabled], routing=RoutingPolicy(strategy="single"))
+
+
+def test_allowed_plugin_factory_prefixes_default_empty() -> None:
+    """``allowed_plugin_factory_prefixes`` is empty by default — host opts in explicitly."""
+
+    cfg = _toy_config()
+    assert cfg.allowed_plugin_factory_prefixes == []
+
+
+def test_allowed_plugin_factory_prefixes_round_trip() -> None:
+    """The plugin allowlist round-trips via camelCase alias on the wire."""
+
+    cfg = _toy_config(allowed_plugin_factory_prefixes=["vigor_adapter_photo"])
+    payload = cfg.model_dump(by_alias=True, mode="json")
+    assert payload["allowedPluginFactoryPrefixes"] == ["vigor_adapter_photo"]
+    rebuilt = AgentConfig.model_validate(payload)
+    assert rebuilt.allowed_plugin_factory_prefixes == ["vigor_adapter_photo"]
+
+
+def test_assert_factory_ref_allowed_rejects_when_host_empty() -> None:
+    ref = FactoryRef(factory="pkg.mod:Cls", allowed_prefixes=["pkg"])
+    with pytest.raises(ValueError, match="host has no allowed_plugin_factory_prefixes"):
+        assert_factory_ref_allowed(ref, [])
+
+
+def test_assert_factory_ref_allowed_accepts_within_host_namespace() -> None:
+    ref = FactoryRef(
+        factory="vigor_runtime.toy_adapter:ToyTextAdapter",
+        allowed_prefixes=["vigor_runtime", "vigor_runtime.toy_adapter"],
+    )
+    assert_factory_ref_allowed(ref, ["vigor_runtime"])
+
+
+def test_assert_factory_ref_allowed_rejects_typosquat_prefix() -> None:
+    ref = FactoryRef(
+        factory="vigor_runtime_evil.foo:Bar",
+        allowed_prefixes=["vigor_runtime_evil"],
+    )
+    with pytest.raises(ValueError, match="plugin-supplied prefix"):
+        assert_factory_ref_allowed(ref, ["vigor_runtime"])
+
+
+def test_assert_factory_ref_allowed_rejects_when_any_prefix_outside_host() -> None:
+    """A plugin needs ALL its declared prefixes within the host allowlist."""
+
+    ref = FactoryRef(
+        factory="vigor_runtime.x:y",
+        allowed_prefixes=["vigor_runtime", "os"],
+    )
+    with pytest.raises(ValueError, match="plugin-supplied prefix 'os'"):
+        assert_factory_ref_allowed(ref, ["vigor_runtime"])

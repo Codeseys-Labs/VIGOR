@@ -26,9 +26,13 @@ FACTORY_PATTERN = r"^[\w\.]+:[\w\.]+$"
 class FactoryRef(_VigorBase):
     """Reference to a Python factory callable as ``module:attr``.
 
-    The ``allowed_prefixes`` field is a supply-chain guard mirroring
-    ``vigor_harness.evaluator._load_factory`` — only modules whose dotted
-    path begins with one of these prefixes can be imported by the loader.
+    The ``allowed_prefixes`` field is a namespace assertion mirroring
+    ``vigor_harness.evaluator._load_factory``: a module passes the gate
+    when it equals one of the prefixes or is a dotted-component
+    descendant (``prefix`` or ``prefix.subpkg``). Plain ``startswith``
+    matches typosquats like ``vigor_runtime_evil`` and is intentionally
+    rejected. Plugin-supplied prefixes are gated separately by the host
+    via :func:`assert_factory_ref_allowed`.
     """
 
     factory: str = Field(pattern=FACTORY_PATTERN)
@@ -71,11 +75,17 @@ class MCPServerSpec(_VigorBase):
                 raise ValueError("stdio transport requires a non-empty command")
             if self.url is not None:
                 raise ValueError("stdio transport must not set url")
+            if self.headers:
+                raise ValueError("stdio transport must not set headers (http/sse only)")
         else:
             if not self.url:
                 raise ValueError(f"{self.transport} transport requires url")
             if self.command is not None:
                 raise ValueError(f"{self.transport} transport must not set command")
+            if self.env:
+                raise ValueError(
+                    f"{self.transport} transport must not set env (stdio subprocess only)"
+                )
         return self
 
 
@@ -106,7 +116,16 @@ class RoutingPolicy(_VigorBase):
 
 
 class AgentConfig(_VigorBase):
-    """Top-level configuration for one VIGOR agent."""
+    """Top-level configuration for one VIGOR agent.
+
+    ``allowed_plugin_factory_prefixes`` is the host-side allowlist that
+    constrains which prefixes a plugin's ``.plugin/vigor.json`` may
+    declare in its `FactoryRef`. Without it, a plugin could opt itself
+    into any namespace (e.g. ``allowed_prefixes=["os"]``) and bypass the
+    per-`FactoryRef` namespace assertion. Empty list (default) means
+    "no plugins" — host must explicitly opt in to plugin-supplied
+    factories.
+    """
 
     schema_version: Literal["vigor.agent_config.v1"] = "vigor.agent_config.v1"
     agent_id: str = Field(pattern=ID_PATTERN)
@@ -116,6 +135,7 @@ class AgentConfig(_VigorBase):
     routing: RoutingPolicy = Field(default_factory=RoutingPolicy)
     budgets: Budgets = Field(default_factory=Budgets)
     archive_dir: str = "runs"
+    allowed_plugin_factory_prefixes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_unique_ids_and_routing(self) -> AgentConfig:
@@ -142,4 +162,39 @@ class AgentConfig(_VigorBase):
                     f"routing.overrides[{task_id!r}] = {adapter_id!r} does not match "
                     "any declared adapter"
                 )
+        if self.routing.strategy == "single":
+            enabled_count = sum(1 for adapter in self.adapters if adapter.enabled)
+            if enabled_count != 1:
+                raise ValueError(
+                    "routing.strategy='single' requires exactly one enabled adapter, "
+                    f"found {enabled_count}"
+                )
         return self
+
+
+def assert_factory_ref_allowed(
+    ref: FactoryRef, host_allowed_prefixes: list[str] | tuple[str, ...]
+) -> None:
+    """Verify a plugin-supplied `FactoryRef` only declares host-allowed prefixes.
+
+    Plugins ship their own ``allowed_prefixes`` inside
+    ``.plugin/vigor.json``. The host registering the plugin MUST gate
+    those prefixes against its own allowlist using dotted-component
+    matching, otherwise any plugin author could opt themselves into
+    arbitrary namespaces (the prefix becomes self-authorization).
+
+    Raises ``ValueError`` if any of the plugin's declared prefixes is
+    not contained in (or equal to) one of the host-allowed prefixes.
+    """
+
+    if not host_allowed_prefixes:
+        raise ValueError(
+            "host has no allowed_plugin_factory_prefixes configured; refuse to "
+            "register plugin factory"
+        )
+    host = list(host_allowed_prefixes)
+    for prefix in ref.allowed_prefixes:
+        if not any(prefix == allowed or prefix.startswith(allowed + ".") for allowed in host):
+            raise ValueError(
+                f"plugin-supplied prefix {prefix!r} is not within host-allowed prefixes {host!r}"
+            )

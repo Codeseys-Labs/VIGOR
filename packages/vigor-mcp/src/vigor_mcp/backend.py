@@ -37,7 +37,7 @@ SessionOpener = Callable[[MCPServerSpec, AsyncExitStack], Awaitable[_MCPSession]
 class _ServerHandle:
     """Per-server connection state."""
 
-    __slots__ = ("_lock", "_stack", "_tools_cache", "session", "spec")
+    __slots__ = ("_allowlist", "_lock", "_stack", "_tools_cache", "session", "spec")
 
     def __init__(self, spec: MCPServerSpec) -> None:
         self.spec = spec
@@ -45,11 +45,28 @@ class _ServerHandle:
         self._lock = asyncio.Lock()
         self._stack = AsyncExitStack()
         self._tools_cache: list[ToolManifest] | None = None
+        self._allowlist: frozenset[str] | None = (
+            frozenset(spec.tool_allowlist) if spec.tool_allowlist is not None else None
+        )
+
+    @property
+    def allowlist(self) -> frozenset[str] | None:
+        """Frozen membership-test view of ``spec.tool_allowlist`` (or None)."""
+
+        return self._allowlist
 
     async def ensure_open(self, opener: SessionOpener) -> _MCPSession:
         async with self._lock:
             if self.session is None:
-                self.session = await opener(self.spec, self._stack)
+                try:
+                    self.session = await opener(self.spec, self._stack)
+                except BaseException:
+                    # Roll back any partially-entered transport contexts so a
+                    # failed handshake does not leak subprocesses or sockets.
+                    await self._stack.aclose()
+                    self._stack = AsyncExitStack()
+                    self.session = None
+                    raise
             return self.session
 
     async def list_tools(self, opener: SessionOpener) -> list[ToolManifest]:
@@ -61,10 +78,7 @@ class _ServerHandle:
         tools_iter = getattr(result, "tools", None) or []
         for tool in tools_iter:
             payload = tool.model_dump() if hasattr(tool, "model_dump") else dict(tool)
-            if (
-                self.spec.tool_allowlist is not None
-                and payload.get("name") not in self.spec.tool_allowlist
-            ):
+            if self._allowlist is not None and payload.get("name") not in self._allowlist:
                 continue
             manifests.append(mcp_tool_to_manifest(self.spec.server_id, payload))
         self._tools_cache = manifests
@@ -114,7 +128,7 @@ class MCPToolBackend(ToolBackend):
                 status="failure",
                 error=f"unknown MCP server_id {server_id!r}",
             )
-        if handle.spec.tool_allowlist is not None and tool_name not in handle.spec.tool_allowlist:
+        if handle.allowlist is not None and tool_name not in handle.allowlist:
             return ToolResult(
                 tool_id=tool_id,
                 status="failure",
@@ -122,16 +136,22 @@ class MCPToolBackend(ToolBackend):
             )
         try:
             session = await handle.ensure_open(self._opener)
-            result = await asyncio.wait_for(
-                session.call_tool(tool_name, payload),
-                timeout=handle.spec.timeout_s,
-            )
-        except TimeoutError:
-            return ToolResult(
-                tool_id=tool_id,
-                status="timeout",
-                error=f"timed out after {handle.spec.timeout_s}s",
-            )
+            # asyncio.wait_for cancels the inner task on timeout but does
+            # NOT roll back any session state the call had taken. Tear
+            # down the handle so the next call_tool on this server opens
+            # a fresh session rather than reusing a half-completed one.
+            try:
+                result = await asyncio.wait_for(
+                    session.call_tool(tool_name, payload),
+                    timeout=handle.spec.timeout_s,
+                )
+            except TimeoutError:
+                await handle.aclose()
+                return ToolResult(
+                    tool_id=tool_id,
+                    status="timeout",
+                    error=f"timed out after {handle.spec.timeout_s}s",
+                )
         except (MCPBackendError, RuntimeError, OSError) as exc:
             return ToolResult(tool_id=tool_id, status="failure", error=str(exc))
         return self._wrap_result(tool_id, result)

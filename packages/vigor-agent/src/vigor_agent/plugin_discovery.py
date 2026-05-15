@@ -19,7 +19,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from vigor_core.agent_config import AdapterSpec, FactoryRef
+from vigor_core.agent_config import (
+    AdapterSpec,
+    FactoryRef,
+    assert_factory_ref_allowed,
+)
 from vigor_core.plugin import OpenPluginManifest
 
 
@@ -81,12 +85,20 @@ def adapter_spec_from_plugin(
     adapter_id: str,
     modalities: list[str] | None = None,
     domains: list[str] | None = None,
+    host_allowed_prefixes: list[str] | tuple[str, ...] | None = None,
 ) -> AdapterSpec:
     """Build an `AdapterSpec` from a discovered plugin's Python factory.
 
     Raises if the plugin doesn't include a `FactoryRef` (i.e. has
     skills/MCP only). Such plugins can still be useful as ambient tool
     sources, but they can't drive the VIGOR loop on their own.
+
+    ``host_allowed_prefixes`` is the host's allowlist for plugin-supplied
+    namespaces. If supplied, every prefix declared inside the plugin's
+    own ``.plugin/vigor.json`` must be contained in (or equal to) one
+    of these — preventing a plugin from self-authorising into arbitrary
+    namespaces. ``None`` keeps the legacy behavior (no host gate); the
+    caller is then responsible for trusting the plugin's declarations.
     """
 
     if plugin.factory is None:
@@ -94,6 +106,11 @@ def adapter_spec_from_plugin(
             f"plugin at {plugin.root} has no .plugin/vigor.json with a Python "
             "FactoryRef; v1 vigor-agent cannot drive the VIGOR loop without one"
         )
+    if host_allowed_prefixes is not None:
+        try:
+            assert_factory_ref_allowed(plugin.factory, host_allowed_prefixes)
+        except ValueError as exc:
+            raise PluginDiscoveryError(str(exc)) from exc
     return AdapterSpec(
         adapter_id=adapter_id,
         factory=plugin.factory,

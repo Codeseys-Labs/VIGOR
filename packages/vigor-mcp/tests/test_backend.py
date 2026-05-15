@@ -160,3 +160,95 @@ async def test_session_opened_only_once_per_server() -> None:
     await backend.call_tool("mcp.alpha.echo", {"a": 2})
     assert opener.opened.count("alpha") == 1
     await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_tool_allowlist_uses_frozenset_membership() -> None:
+    """A large allowlist relies on O(1) set membership, not O(n) list scan."""
+
+    spec = MCPServerSpec(
+        server_id="alpha",
+        transport="stdio",
+        command=["x"],
+        tool_allowlist=[f"tool_{i}" for i in range(500)],
+    )
+    backend = MCPToolBackend([spec], session_opener=_OpenerFactory())
+    handle = backend._handles["alpha"]  # type: ignore[attr-defined]
+    assert isinstance(handle.allowlist, frozenset)
+    assert "tool_0" in handle.allowlist
+    assert "tool_499" in handle.allowlist
+    assert "tool_500" not in handle.allowlist
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_timeout_resets_handle_for_next_call() -> None:
+    """If call_tool path itself times out via spec.timeout_s, the handle is rebuilt."""
+
+    # Build a spec whose timeout is enforced by the backend (timeout_s>=1 by schema).
+    # Use a manual session that always sleeps longer than 1s.
+    class _AlwaysSlowSession:
+        async def list_tools(self) -> _FakeListResult:
+            return _FakeListResult(tools=[_FakeTool(name="echo")])
+
+        async def call_tool(
+            self, name: str, arguments: dict[str, Any] | None = None
+        ) -> _FakeCallResult:
+            import asyncio as _aio
+
+            await _aio.sleep(2.0)
+            return _FakeCallResult(content=[_FakeContentBlock(text="late")])
+
+    opens: list[str] = []
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _AlwaysSlowSession:
+        opens.append(spec.server_id)
+        return _AlwaysSlowSession()
+
+    spec = MCPServerSpec(
+        server_id="alpha",
+        transport="stdio",
+        command=["x"],
+        timeout_s=1,
+    )
+    backend = MCPToolBackend([spec], session_opener=opener)
+    result = await backend.call_tool("mcp.alpha.echo", {})
+    assert result.status == "timeout"
+    # Next call should open a brand new session (handle was torn down).
+    # The next call would also time out, so just assert opens grew.
+    second = await backend.call_tool("mcp.alpha.echo", {})
+    assert second.status == "timeout"
+    assert opens.count("alpha") == 2
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ensure_open_rolls_back_on_failure() -> None:
+    """If session_opener raises, the AsyncExitStack must be reset."""
+
+    class _BoomError(RuntimeError):
+        pass
+
+    attempts: list[int] = []
+    succeeded: dict[str, _FakeSession] = {}
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _FakeSession:
+        attempts.append(len(attempts))
+        if len(attempts) == 1:
+            raise _BoomError("first open fails")
+        session = _FakeSession()
+        succeeded[spec.server_id] = session
+        return session
+
+    backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener)
+    handle = backend._handles["alpha"]  # type: ignore[attr-defined]
+
+    with pytest.raises(_BoomError):
+        await handle.ensure_open(opener)
+    # session must NOT remain set after failure; second call should re-open
+    assert handle.session is None
+
+    session = await handle.ensure_open(opener)
+    assert session is succeeded["alpha"]
+    assert handle.session is session
+    await backend.aclose()

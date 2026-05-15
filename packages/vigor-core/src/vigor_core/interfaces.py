@@ -149,6 +149,15 @@ class ToolBackend(abc.ABC):
     @abc.abstractmethod
     async def list_tools(self) -> list[ToolManifest]: ...
 
+    async def aclose(self) -> None:
+        """Optional cleanup hook.
+
+        MCP-backed tools open subprocesses or sockets; the orchestrator
+        invokes ``aclose`` in its ``finally`` block so leaked sessions
+        cannot outlive a run. In-process / stateless tool backends can
+        leave the default no-op implementation.
+        """
+
 
 class DomainAdapter(abc.ABC):
     """Owns a modality: its IR, compiler, reviewers, and exports."""

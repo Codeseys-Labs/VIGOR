@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from vigor_agent.agent import AgentOrchestrator
@@ -16,7 +17,8 @@ from vigor_core.agent_config import (
     FactoryRef,
     RoutingPolicy,
 )
-from vigor_core.schemas import Budgets, TaskSpec
+from vigor_core.interfaces import ToolBackend, ToolResult
+from vigor_core.schemas import Budgets, TaskSpec, ToolManifest
 
 
 def _toy_config(archive_dir: Path, **overrides: object) -> AgentConfig:
@@ -153,6 +155,31 @@ archiveDir: runs
     cfg = load_agent_config(cfg_path)
     assert cfg.agent_id == "agent_yaml"
     assert cfg.adapters[0].adapter_id == "adapter_toy"
+
+
+class _SpyTools(ToolBackend):
+    def __init__(self) -> None:
+        self.closed = 0
+
+    async def call_tool(self, tool_id: str, payload: dict[str, Any]) -> ToolResult:
+        return ToolResult(tool_id=tool_id, status="success")
+
+    async def list_tools(self) -> list[ToolManifest]:
+        return []
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+@pytest.mark.asyncio
+async def test_agent_aclose_calls_tool_backend_aclose(tmp_path: Path) -> None:
+    """AgentOrchestrator.aclose() must propagate to the injected ToolBackend."""
+
+    spy = _SpyTools()
+    cfg = _toy_config(tmp_path / "runs")
+    agent = AgentOrchestrator(cfg, tool_backend=spy)
+    await agent.aclose()
+    assert spy.closed == 1
 
 
 def test_load_agent_config_json(tmp_path: Path) -> None:
