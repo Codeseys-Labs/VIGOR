@@ -21,6 +21,7 @@ from vigor_core.schemas import (
     ReviewReport,
     TaskSpec,
     ToolManifest,
+    Usage,
 )
 
 
@@ -135,6 +136,17 @@ class AgentBackend(abc.ABC):
 
     @abc.abstractmethod
     async def propose_patch(self, request: PatchProposalRequest) -> PatchProposal: ...
+
+    async def usage(self) -> Usage:
+        """Return cumulative usage across every call made on this backend.
+
+        Default returns ``Usage()`` (zeros), which means the backend does
+        not expose token counts. Per ADR-0028, runs against a non-reporting
+        backend cannot enforce ``Budgets.max_cost_usd`` and surface the
+        zero usage on ``RunResult.usage`` so operators can see they need
+        to switch backends.
+        """
+        return Usage()
 
     async def aclose(self) -> None:
         """Optional cleanup hook."""

@@ -70,6 +70,7 @@ from vigor_core.schemas import (
     StopReason,
     TaskSpec,
     ToolManifest,
+    Usage,
 )
 from vigor_core.schemas import (
     RuntimeErrorRecord as VigorRuntimeError,
@@ -144,6 +145,7 @@ __all__ = [
     "ToolManifest",
     "ToolResult",
     "ToolTimeoutError",
+    "Usage",
     "ValidationReport",
     "VigorError",
     "VigorRuntimeError",
