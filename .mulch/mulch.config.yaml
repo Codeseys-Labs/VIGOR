@@ -3,6 +3,8 @@ domains:
   overstory: {}
   research: {}
   vigor-mcp: {}
+  decisions: {}
+  adr: {}
 governance:
   max_entries: 100
   warn_entries: 150
