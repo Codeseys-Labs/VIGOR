@@ -56,6 +56,26 @@ class MCPServerSpec(_VigorBase):
     Stdio servers use ``command`` (argv); HTTP/SSE servers use ``url``
     plus optional ``headers``. ``role_mapping`` reserves space for a
     future MCP-as-DomainAdapter convention; v1 keeps it empty.
+
+    Subprocess env policy (stdio only, breaking default-change per ADR-0029)
+    -----------------------------------------------------------------------
+    For the ``stdio`` transport, ``env`` is the **explicit pass-through** for
+    the spawned MCP server. The transport now starts the child with a
+    drop-all-by-default environment: only keys named in this dict (plus
+    ``PATH``, which is required for CLI shims like ``uvx``/``npx``) reach
+    the child process. Vendor keys (``ANTHROPIC_API_KEY``, ``GEMINI_API_KEY``,
+    ``AWS_*``, ``OPENAI_API_KEY``, ...) are **not** inherited from the parent
+    process and must be declared here if the server needs them.
+
+    This is a breaking default-change from the prior inherit-all-when-empty
+    behavior. The migration is server-by-server: any official MCP server
+    that previously relied on inherited env keys will fail loudly with a
+    missing-key error from the server itself; declaring the key in
+    ``MCPServerSpec.env`` resolves it. See ``docs/adr/0016-official-mcp-servers.md``
+    for the per-server required-key list.
+
+    For ``http`` and ``sse`` transports, ``env`` MUST be empty — those
+    transports do not spawn a subprocess.
     """
 
     server_id: str = Field(pattern=ID_PATTERN)
