@@ -1,0 +1,43 @@
+[
+	{
+		"id": "group-10ccfc77",
+		"name": "agent-framework-merge",
+		"memberIssueIds": [
+			"VIGOR-73da",
+			"VIGOR-67ca",
+			"VIGOR-d324",
+			"VIGOR-5ec1",
+			"VIGOR-c9a8",
+			"VIGOR-ff1c",
+			"VIGOR-ca0f",
+			"VIGOR-6ebc",
+			"VIGOR-7e5d",
+			"VIGOR-3ad5",
+			"VIGOR-57b2",
+			"VIGOR-81eb",
+			"VIGOR-8bdf",
+			"VIGOR-abf0",
+			"VIGOR-db22",
+			"VIGOR-c931",
+			"VIGOR-83b7",
+			"VIGOR-b198",
+			"VIGOR-6c15"
+		],
+		"status": "completed",
+		"createdAt": "2026-05-15T06:32:57.385Z",
+		"completedAt": "2026-05-15T08:13:11.187Z"
+	},
+	{
+		"id": "group-861a411e",
+		"name": "vigor-strategic-deepdive",
+		"memberIssueIds": [
+			"VIGOR-7724",
+			"VIGOR-312b",
+			"VIGOR-455f",
+			"VIGOR-c1ab"
+		],
+		"status": "active",
+		"createdAt": "2026-05-15T07:57:34.229Z",
+		"completedAt": null
+	}
+]
