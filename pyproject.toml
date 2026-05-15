@@ -52,6 +52,9 @@ filterwarnings = [
   "ignore::pytest.PytestUnraisableExceptionWarning",
   "ignore::DeprecationWarning:pathlib.*",
 ]
+markers = [
+  "requires_mcp: integration test that spawns a real MCP server subprocess (requires the optional 'mcp' SDK to be installed)",
+]
 
 [tool.mypy]
 python_version = "3.11"
