@@ -47,6 +47,17 @@ Every PR must pass:
 3. `uv run mypy` (strict)
 4. `uv run pytest`
 
+## Regenerating Adapter Skills
+
+Each adapter ships a generated `SKILL.md` derived from its registered IR JSON Schema (see ADR-0015). If you change an adapter's IR module, regenerate the skill files and commit them in the same PR:
+
+```bash
+uv run python scripts/regen_skills.py
+git add packages/*/skills/
+```
+
+The `skill-drift` GitHub Actions workflow runs this script on every PR and fails if the regenerated output differs from what was committed. Regenerate locally before pushing to avoid red CI.
+
 ## Schema Changes
 
 1. Bump the schema version (see ADR-0011): add a new `Literal[...]` version instead of editing the old one if the change is not fully backward compatible.
