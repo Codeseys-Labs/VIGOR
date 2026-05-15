@@ -1,4 +1,4 @@
-# ADR-0012: Enforce Cost Ceilings Via AgentBackend Usage Telemetry And A RunBudgetTracker
+# ADR-0028: Enforce Cost Ceilings Via AgentBackend Usage Telemetry And A RunBudgetTracker
 
 Status: Proposed
 

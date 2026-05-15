@@ -1,4 +1,4 @@
-# ADR-0013: Default-Drop Subprocess Environment For MCP Stdio And Per-Tenant Run Archive Scoping
+# ADR-0029: Default-Drop Subprocess Environment For MCP Stdio And Per-Tenant Run Archive Scoping
 
 Status: Proposed
 

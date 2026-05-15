@@ -1,4 +1,4 @@
-# ADR-0019: Ship VIGOR As Library + CLI; Defer Hosted vigor-server As Downstream Concern
+# ADR-0030: Ship VIGOR As Library + CLI; Defer Hosted vigor-server As Downstream Concern
 
 Status: Proposed
 
@@ -27,7 +27,7 @@ library-first and that production hosting is a downstream concern owned by
 operators or by a separate (currently nonexistent) project. The current
 README implicitly favors library-first; nothing yet codifies it. Without an
 explicit commitment, sibling ADR work cannot make consistent decisions:
-ADR-0012's cost ceiling, ADR-0013's tenant scoping, the audit-log ADR (Seeds
+ADR-0028's cost ceiling, ADR-0029's tenant scoping, the audit-log ADR (Seeds
 task), and the threat-model deliverable all need to know whether they are
 designing for a single-process library or a hosted multi-tenant service.
 
@@ -80,8 +80,8 @@ foreseeable future. Concretely:
    give that layer the seams it needs (per ADR-0007 and ADR-0010); the
    library does not pre-build for them.
 
-5. **Library-first does not mean "no hardening".** ADR-0012 (cost ceilings),
-   ADR-0013 (multi-tenant subprocess env), the audit-log ADR, and the
+5. **Library-first does not mean "no hardening".** ADR-0028 (cost ceilings),
+   ADR-0029 (multi-tenant subprocess env), the audit-log ADR, and the
    threat-model deliverable all do real work. The point of this ADR is that
    they target the library surface and the seams a hosting layer would
    consume — not a hosted entry point that the library does not own.
@@ -114,7 +114,7 @@ project is a published Python distribution, not a hosted service.
 | Alternative | Reason Rejected |
 | --- | --- |
 | Add a "Deployment posture" section to `README.md` and `docs/strategy/deployment-and-ops.md` and call the question settled without writing an ADR | A README section is editable without consensus; an ADR is not. The decision binds future architectural work — sibling ADRs reference it. Recording the decision as an ADR makes the binding visible and the override path explicit (write a superseding ADR). |
-| (Chosen) Record as ADR-0019 with explicit deferral language | Same posture as ADR-0017 ("admit pure-MCP plugins") and ADR-0016 ("official MCP servers"): commitments that constrain future work get ADRs. |
+| (Chosen) Record as ADR-0030 with explicit deferral language | Same posture as ADR-0017 ("admit pure-MCP plugins") and ADR-0016 ("official MCP servers"): commitments that constrain future work get ADRs. |
 
 ## Consequences
 
@@ -190,8 +190,8 @@ project is a published Python distribution, not a hosted service.
 | `TaskSpec` / `RunResult` schemas | `packages/vigor-core/src/vigor_core/schemas.py` |
 | ADR-0007 (SDK-agnostic core posture — premise) | `0007-sdk-agnostic-core-with-optional-agent-backends.md` |
 | ADR-0009 (single UV monorepo layout — premise) | `0009-monorepo-layout.md` |
-| ADR-0012 (cost ceilings on the library surface — sibling) | `0012-cost-ceiling-enforcement.md` |
-| ADR-0013 (multi-tenant subprocess env hardening — sibling) | `0013-multi-tenant-subprocess-env-hardening.md` |
+| ADR-0028 (cost ceilings on the library surface — sibling) | `0028-cost-ceiling-enforcement.md` |
+| ADR-0029 (multi-tenant subprocess env hardening — sibling) | `0029-multi-tenant-subprocess-env-hardening.md` |
 | Deployment scout survey (recommendation #5) | `.overstory/specs/VIGOR-4293.md` |
 | `docs/readiness/implementation-readiness.md` row C10 (container sandbox = future hardening) | `docs/readiness/implementation-readiness.md` |
 | Anthropic guidance on agent harness shapes | https://www.anthropic.com/engineering/harness-design-long-running-apps |
