@@ -5,6 +5,8 @@ domains:
   vigor-mcp: {}
   decisions: {}
   adr: {}
+  vigor-agent: {}
+  vigor-core: {}
 governance:
   max_entries: 100
   warn_entries: 150
