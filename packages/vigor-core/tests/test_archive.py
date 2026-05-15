@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+import time
 from pathlib import Path
 
+import pytest
 from vigor_core.archive import RunArchive
+from vigor_core.errors import ArchiveLockedError
 from vigor_core.schemas import (
     AdapterManifest,
     AdjudicationReport,
@@ -130,3 +136,140 @@ def test_full_run_write_cycle(tmp_path: Path) -> None:
     assert (archive.run_dir(task.task_id) / "frontier.json").exists()
     assert (archive.run_dir(task.task_id) / "final" / "export_bundle.json").exists()
     assert (archive.run_dir(task.task_id) / "final" / "provenance.json").exists()
+
+
+def test_lock_file_created_on_open(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    try:
+        assert (tmp_path / ".archive.lock").exists()
+    finally:
+        archive.close()
+
+
+def test_close_is_idempotent(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    archive.close()
+    archive.close()  # second close must not raise
+
+
+def test_context_manager_releases_lock(tmp_path: Path) -> None:
+    with RunArchive(tmp_path) as archive:
+        archive.write_task(_demo_task())
+    # After the context exits, a new archive can be opened.
+    second = RunArchive(tmp_path)
+    second.close()
+
+
+def test_same_process_reentry_shares_lock(tmp_path: Path) -> None:
+    """Adapter `export()` paths construct a transient RunArchive on the same
+    root the orchestrator already holds. The refcount registry must allow
+    this; otherwise normal happy-path runs would raise ArchiveLockedError.
+    """
+
+    primary = RunArchive(tmp_path)
+    try:
+        secondary = RunArchive(tmp_path)
+        # Both should be usable.
+        primary.write_task(_demo_task())
+        # secondary points at the same root; reading what primary wrote
+        # exercises that the refcounted re-entry produces a working archive.
+        assert secondary.read_task("run_001").task_id == "run_001"
+        secondary.close()
+        # Primary still holds the lock — re-opening from the same process is
+        # fine (refcount), and after primary closes it should also release.
+    finally:
+        primary.close()
+    # After all in-process holders close, a fresh archive opens cleanly.
+    third = RunArchive(tmp_path)
+    third.close()
+
+
+def _spawn_child_holding_lock(
+    archive_dir: Path,
+    ready_file: Path,
+    exit_file: Path,
+) -> subprocess.Popen[bytes]:
+    """Spawn a child process that opens RunArchive and holds the lock until told to exit."""
+
+    script = textwrap.dedent(
+        f"""
+        import sys
+        import time
+        from pathlib import Path
+
+        from vigor_core.archive import RunArchive
+
+        archive = RunArchive(Path({str(archive_dir)!r}))
+        Path({str(ready_file)!r}).write_text("ready", encoding="utf-8")
+        # Hold the lock until the test signals exit.
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if Path({str(exit_file)!r}).exists():
+                break
+            time.sleep(0.05)
+        archive.close()
+        """
+    )
+    return subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def test_second_process_raises_archive_locked_error(tmp_path: Path) -> None:
+    archive_dir = tmp_path / "shared"
+    archive_dir.mkdir()
+    ready = tmp_path / "ready"
+    exit_signal = tmp_path / "exit"
+    proc = _spawn_child_holding_lock(archive_dir, ready, exit_signal)
+    try:
+        # Wait for child to acquire the lock.
+        deadline_loops = 200  # 200 * 0.05s = 10s
+        for _ in range(deadline_loops):
+            if ready.exists():
+                break
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate(timeout=1)
+                raise AssertionError(
+                    f"child exited early: rc={proc.returncode} stdout={stdout!r} stderr={stderr!r}"
+                )
+            time.sleep(0.05)
+        else:
+            raise AssertionError("child never reported ready")
+
+        with pytest.raises(ArchiveLockedError):
+            RunArchive(archive_dir)
+    finally:
+        exit_signal.write_text("go", encoding="utf-8")
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_lock_released_after_close_allows_reopen_from_other_process(tmp_path: Path) -> None:
+    archive_dir = tmp_path / "shared"
+    archive_dir.mkdir()
+    first = RunArchive(archive_dir)
+    first.close()
+    # A subprocess should now be able to acquire the lock.
+    rc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                f"""
+                from pathlib import Path
+                from vigor_core.archive import RunArchive
+                archive = RunArchive(Path({str(archive_dir)!r}))
+                archive.close()
+                """
+            ),
+        ],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert rc.returncode == 0, (rc.stdout, rc.stderr)

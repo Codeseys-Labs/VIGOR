@@ -104,3 +104,4 @@ class AgentOrchestrator:
             close = getattr(self._tool_backend, "aclose", None)
             if close is not None:
                 await close()
+        self._archive.close()

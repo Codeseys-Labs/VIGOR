@@ -64,3 +64,15 @@ class BudgetExceededError(VigorError):
 class AdapterContractError(VigorError):
     kind = "adapter_contract"
     retryable = False
+
+
+class ArchiveLockedError(VigorError):
+    """Another process holds the advisory lock on this archive directory.
+
+    See ADR-0035: VIGOR-the-library is single-node by contract. The
+    `RunArchive` constructor acquires `<archive_dir>/.archive.lock` exclusively
+    and refuses to open if a peer process already holds it.
+    """
+
+    kind = "archive_locked"
+    retryable = False
