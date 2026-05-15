@@ -5,7 +5,7 @@ Status: Draft for review
 Date: 2026-05-15
 Audience: VIGOR architecture lead, downstream integrators considering VIGOR as a product foundation, sibling builders writing the deployment ADRs (VIGOR-c1ab) and threat model (VIGOR-f44c).
 Parent task: VIGOR-7724 (strategic deep-dive on vigor-runtime production-readiness).
-Companion deliverables: ADRs 0031–0034 (this branch); Seeds backlog (this branch); deployment ADRs 0028/0029/0030 + `docs/strategy/deployment-and-ops.md` (sibling branch, already merged).
+Companion deliverables: ADRs 0034–0037 (this branch); Seeds backlog (this branch); deployment ADRs 0028/0029/0030 + `docs/strategy/deployment-and-ops.md` (sibling branch, already merged).
 
 ---
 
@@ -16,7 +16,7 @@ VIGOR's runtime today (`packages/vigor-runtime/src/vigor_runtime/orchestrator.py
 The eight production-readiness questions VIGOR-7724 enumerates split cleanly into three groups:
 
 - **Already addressed by sibling work.** Q4 cost-attribution-per-candidate is the body of ADR-0028 (cost ceilings via `AgentBackend.usage()` and `RunBudgetTracker`). Re-deciding it here would create a sibling-ADR conflict; this document only references it.
-- **Decided here as ADRs.** Q1 parallel best-of-N (ADR-0031), Q2 distributed orchestration posture (ADR-0032), Q3 checkpoint/resume (ADR-0033), Q5 observability seam (ADR-0034). Each is foundational enough that a Seeds task without an ADR would risk re-litigation.
+- **Decided here as ADRs.** Q1 parallel best-of-N (ADR-0034), Q2 distributed orchestration posture (ADR-0035), Q3 checkpoint/resume (ADR-0036), Q5 observability seam (ADR-0037). Each is foundational enough that a Seeds task without an ADR would risk re-litigation.
 - **Filed as Seeds without an ADR.** Q6 partial-result streaming, Q7 cancellation propagation, Q8 backpressure / batched-eval queue management. Each has an obvious shape (an `AsyncIterator` adapter, an `asyncio.CancelledError` propagation pass, and a queue primitive in the meta-harness) but does not require an ADR-level commitment — they extend the existing surface without changing its public contract.
 
 The strategic posture this document recommends is: **(1)** ship parallel best-of-N inside the existing `_candidate_batch` seam (`orchestrator.py:252-275`) gated by a `Budgets.parallel_candidates` cap, treating budgets as the same enforcement axis as wall-clock; **(2)** explicitly defer distributed orchestration to a future `vigor-server` (consistent with ADR-0030 library-first), documenting VIGOR-as-library as **single-node by contract** so the archive's filesystem locking story stays simple; **(3)** wire checkpoint/resume on top of the existing per-iteration `RunArchive` writes, treating mid-run resume as "re-enter the loop with the highest-iteration candidate set"; **(4)** add an OpenTelemetry-shaped `RuntimeObserver` interface as an opt-in seam — no hard `opentelemetry` dependency in `vigor-core` or `vigor-runtime`. The ordering is the same enforcement-cost ordering ADR-0028 already established: paper budgets first (Q1), then defer-and-document (Q2), then state-shape extensions (Q3), then observation seams (Q5).
@@ -98,21 +98,21 @@ Each question is classified following the deployment-and-ops convention: `founda
 
 **Question.** What's the right concurrency model for evaluating candidates? `asyncio.gather` vs process pool? How does it interact with budgets?
 
-**Recommendation.** `asyncio.gather` with a `Budgets.parallel_candidates` cap. **Not** a process pool. **ADR-0031** records the decision in detail; the executive answer is:
+**Recommendation.** `asyncio.gather` with a `Budgets.parallel_candidates` cap. **Not** a process pool. **ADR-0034** records the decision in detail; the executive answer is:
 
 - Generation is I/O-bound (LLM API calls). `asyncio.gather` is the right primitive — process pools serialize on the GIL only when CPU-bound, which agent generation is not.
 - Compile + adapter reviewers can be CPU-bound (rawpy, OpenSCAD, Manim subprocesses). Adapters that are CPU-bound should already be releasing the GIL (subprocess calls do); adapters that aren't are out-of-tree concerns. The runtime does not mandate a process pool to compensate.
 - Budget interaction: the cost ceiling check (ADR-0028) and the new wall-clock check both run at iteration boundaries. Parallel candidate evaluation does **not** move the enforcement seam — the iteration is still the unit. The accepted consequence is bounded overshoot of one parallel batch's worth of spend.
 
-The fanout site is the existing `_candidate_batch` and the inner `for ir in candidates` loop in `Orchestrator.run` (`orchestrator.py:122-128, 252-275`). The new control knob is `Budgets.parallel_candidates: int = 1` (default 1 preserves current sequential behavior; raising the cap enables the new parallelism). See ADR-0031 for the alternatives table and the bounded-overshoot consequence analysis.
+The fanout site is the existing `_candidate_batch` and the inner `for ir in candidates` loop in `Orchestrator.run` (`orchestrator.py:122-128, 252-275`). The new control knob is `Budgets.parallel_candidates: int = 1` (default 1 preserves current sequential behavior; raising the cap enables the new parallelism). See ADR-0034 for the alternatives table and the bounded-overshoot consequence analysis.
 
-**Anchors.** `orchestrator.py:114-275`; `schemas.py:51-58`; ADR-0031.
+**Anchors.** `orchestrator.py:114-275`; `schemas.py:51-58`; ADR-0034.
 
 ### Q2: Distributed orchestration — *foundational*, defer-and-document
 
 **Question.** Can multiple Orchestrators share an archive? Cross-process locking? Or do we explicitly defer this and document VIGOR as single-node?
 
-**Recommendation.** Explicitly defer. **ADR-0032** declares VIGOR-the-library is **single-node by contract**: one orchestrator process per `archive_dir`. No cross-process locking primitive. No distributed coordination. The one-line rule: **the archive directory is private to one orchestrator process**.
+**Recommendation.** Explicitly defer. **ADR-0035** declares VIGOR-the-library is **single-node by contract**: one orchestrator process per `archive_dir`. No cross-process locking primitive. No distributed coordination. The one-line rule: **the archive directory is private to one orchestrator process**.
 
 This is consistent with ADR-0030's library-first commitment. A future hosted `vigor-server` may add tenant-scoped archives (sibling ADR-0029 §"Per-Tenant Run Archive Scoping") and lease-based coordination across replicas; that work is **not** library work. Building cross-process locking into `RunArchive` today would pull VIGOR toward a deployment shape it has not committed to, in service of a use case (multi-replica `vigor-server`) that ADR-0030 explicitly defers.
 
@@ -121,25 +121,25 @@ The mitigation surface — surfacing the constraint to operators — is two-part
 1. `RunArchive.__init__` acquires a process-lifetime advisory lock on `archive_dir/.archive.lock` at archive open. A second orchestrator process opening the same directory raises `ArchiveLockedError`. This is a guardrail, not a coordination primitive.
 2. The library's published surface (`AgentOrchestrator.run` per ADR-0030) documents that two simultaneous runs in the same process are unsupported. The CLI invokes one run per process invocation; the library user is on their honor.
 
-See ADR-0032 for the alternatives table — including why we are not building lease-based locking and not switching to a database backend for the archive.
+See ADR-0035 for the alternatives table — including why we are not building lease-based locking and not switching to a database backend for the archive.
 
-**Anchors.** `archive.py:43-180`; ADR-0030; ADR-0032.
+**Anchors.** `archive.py:43-180`; ADR-0030; ADR-0035.
 
 ### Q3: Checkpoint/resume mid-run — *foundational*
 
 **Question.** How do we serialize partial loop state so a long run can survive process restarts? Archive already persists per-iteration; what's missing?
 
-**Recommendation.** Add a per-iteration `iteration_checkpoint.json` written at the *end* of each iteration's evaluation, then add a `resume_run_id: str | None` field to `TaskSpec` (or, alternatively, an explicit `Orchestrator.resume(run_id)` entry point — see ADR-0033 for the alternatives). On resume, the orchestrator loads the most recent `iteration_checkpoint.json`, rehydrates `prior` and `current_ir`, and re-enters the run loop at the next iteration.
+**Recommendation.** Add a per-iteration `iteration_checkpoint.json` written at the *end* of each iteration's evaluation, then add a `resume_run_id: str | None` field to `TaskSpec` (or, alternatively, an explicit `Orchestrator.resume(run_id)` entry point — see ADR-0036 for the alternatives). On resume, the orchestrator loads the most recent `iteration_checkpoint.json`, rehydrates `prior` and `current_ir`, and re-enters the run loop at the next iteration.
 
 Three subtleties drive the decision:
 
 - **Checkpoint shape.** The orchestrator's per-iteration mutable state is `iteration` (int), `prior: list[ArtifactIR]`, `current_ir: ArtifactIR | None`, `activities: list[ProvenanceActivity]`, `adjudications: list[AdjudicationReport]`, `last_candidate_id`, `last_export`, `accepted`, `stop_reason`. All but the first are already represented as JSON-serializable Pydantic models or simple lists. The checkpoint is a thin envelope around them — no new modeling, no new persistence layer.
 - **Atomicity.** `iteration_checkpoint.json` is written atomically (via `write + os.replace`) at the *end* of an iteration's evaluation, after all candidate JSONs are durable. A crash mid-iteration leaves the previous checkpoint as the resume point; the orphaned partial-iteration candidates are surfaced by `iteration_checkpoint.next_iteration` mismatching the candidate filenames, and the orchestrator's resume path tolerates them.
-- **Backend identity.** Resuming a run after the agent backend's session has expired (Claude Agent SDK token rolled, MCP server restarted) is impossible by construction — the conversation context is gone. ADR-0033 declares resume is **runtime-state resume, not session resume**: the new run gets a fresh backend, the prior IR list is the only context that survives.
+- **Backend identity.** Resuming a run after the agent backend's session has expired (Claude Agent SDK token rolled, MCP server restarted) is impossible by construction — the conversation context is gone. ADR-0036 declares resume is **runtime-state resume, not session resume**: the new run gets a fresh backend, the prior IR list is the only context that survives.
 
-ADR-0033 records the alternatives — including why we are not using the `provenance.json` as the resume point (it is written only on success), why we are not introducing a write-ahead log (overkill for the failure modes we observe), and why resume is **opt-in** (the default is "if a run dies, start over").
+ADR-0036 records the alternatives — including why we are not using the `provenance.json` as the resume point (it is written only on success), why we are not introducing a write-ahead log (overkill for the failure modes we observe), and why resume is **opt-in** (the default is "if a run dies, start over").
 
-**Anchors.** `orchestrator.py:88-250`; `archive.py:131-143`; ADR-0033.
+**Anchors.** `orchestrator.py:88-250`; `archive.py:131-143`; ADR-0036.
 
 ### Q4: Cost attribution per candidate — *tactical*, depends on ADR-0028
 
@@ -157,7 +157,7 @@ The Seeds task (filed in this branch's backlog) extends VIGOR-344f's acceptance 
 
 **Question.** OpenTelemetry traces? Structured logging conventions? Prometheus metrics? What's the minimal viable instrumentation?
 
-**Recommendation.** Add a `RuntimeObserver` Protocol (Python `typing.Protocol`, not ABC — duck-typed for non-VIGOR consumers) with a small fixed surface: `on_run_start`, `on_iteration_start`, `on_candidate_start`, `on_candidate_end`, `on_iteration_end`, `on_run_end`, plus an `on_event(name, attributes)` escape hatch. **ADR-0034** records the decision.
+**Recommendation.** Add a `RuntimeObserver` Protocol (Python `typing.Protocol`, not ABC — duck-typed for non-VIGOR consumers) with a small fixed surface: `on_run_start`, `on_iteration_start`, `on_candidate_start`, `on_candidate_end`, `on_iteration_end`, `on_run_end`, plus an `on_event(name, attributes)` escape hatch. **ADR-0037** records the decision.
 
 Crucial design point: **`vigor-core` and `vigor-runtime` do not depend on `opentelemetry`.** The Protocol is an opt-in seam; an OpenTelemetry-emitting `Observer` lives in a separate `vigor-observability-otel` package (or downstream). Per ADR-0007 SDK-agnosticism, the runtime cannot ship a hard dependency on a specific telemetry SDK; per ADR-0030 library-first, observability sinks are deployment-time choices.
 
@@ -165,9 +165,9 @@ Logging conventions: a single `logging.getLogger("vigor.runtime")` plus structur
 
 Metrics: not in the runtime. Metrics are aggregations of observer events; producing them is an `Observer` implementation's job, not the runtime's. The deployment-and-ops sibling doc (lines 484-499) commits to Prometheus at the `vigor-server` layer; this ADR is consistent with that commitment.
 
-ADR-0034 records the alternatives — including why we are not adopting OpenTelemetry's `tracer.start_as_current_span` directly (it would force the dependency), why we are not using a global default observer (silent telemetry is worse than none), and why we are not making `Observer` an ABC (Protocol matches Python's structural typing better for opt-in seams).
+ADR-0037 records the alternatives — including why we are not adopting OpenTelemetry's `tracer.start_as_current_span` directly (it would force the dependency), why we are not using a global default observer (silent telemetry is worse than none), and why we are not making `Observer` an ABC (Protocol matches Python's structural typing better for opt-in seams).
 
-**Anchors.** `orchestrator.py:88-250`; ADR-0007; ADR-0030; ADR-0034; deployment-and-ops.md §"Observability And Telemetry".
+**Anchors.** `orchestrator.py:88-250`; ADR-0007; ADR-0030; ADR-0037; deployment-and-ops.md §"Observability And Telemetry".
 
 ### Q6: Partial-result streaming — *tactical*, defer to Seeds
 
@@ -179,7 +179,7 @@ The reason this is a Seeds task and not an ADR: the public contract (`AgentOrche
 
 The Seeds task is **VIGOR-7086** (see backlog). Implementation effort estimate: 1–2 days for a builder familiar with async iterators.
 
-**Anchors.** `orchestrator.py:88-250`; ADR-0030; ADR-0034 (the Observer seam is the natural source of stream events).
+**Anchors.** `orchestrator.py:88-250`; ADR-0030; ADR-0037 (the Observer seam is the natural source of stream events).
 
 ### Q7: Cancellation propagation — *tactical*, defer to Seeds
 
@@ -211,11 +211,11 @@ This is **harness-layer** work, not runtime work. The runtime's `Orchestrator.ru
 
 | ID | Question | Classification | Decision Mechanism | Reference |
 | --- | --- | --- | --- | --- |
-| Q1 | Parallel best-of-N | foundational | ADR-0031 | this branch |
-| Q2 | Distributed orchestration | foundational | ADR-0032 (defer) | this branch |
-| Q3 | Checkpoint / resume mid-run | foundational | ADR-0033 | this branch |
+| Q1 | Parallel best-of-N | foundational | ADR-0034 | this branch |
+| Q2 | Distributed orchestration | foundational | ADR-0035 (defer) | this branch |
+| Q3 | Checkpoint / resume mid-run | foundational | ADR-0036 | this branch |
 | Q4 | Cost attribution per candidate | tactical | extend Seeds VIGOR-344f | sibling branch ADR-0028 |
-| Q5 | Observability seam | foundational | ADR-0034 | this branch |
+| Q5 | Observability seam | foundational | ADR-0037 | this branch |
 | Q6 | Partial-result streaming | tactical | Seeds VIGOR-7086 | this branch backlog |
 | Q7 | Cancellation propagation | tactical | Seeds VIGOR-a386 | this branch backlog |
 | Q8 | Backpressure / batched eval | tactical | Seeds VIGOR-1029 | this branch backlog |
@@ -227,7 +227,7 @@ This is **harness-layer** work, not runtime work. The runtime's `Orchestrator.ru
 - **The `vigor-server` HTTP wrapper.** ADR-0030 has already committed to library-first; this document is consistent with that.
 - **Multi-tenant authentication.** Out of scope for any library-level ADR. Consumed by sibling threat model (VIGOR-f44c) only.
 - **Tool-backend retry semantics.** Already filed as Seeds VIGOR-2585 (sibling backlog). Out of scope for runtime-completeness.
-- **Audit-log schema.** Already filed as Seeds VIGOR-a171 (sibling backlog) per ADR-0029. The observability seam in ADR-0034 is **operational telemetry, not audit** — they share insertion points, but `Observer` events are sampled and lossy by design; audit events are append-only and hash-chained.
+- **Audit-log schema.** Already filed as Seeds VIGOR-a171 (sibling backlog) per ADR-0029. The observability seam in ADR-0037 is **operational telemetry, not audit** — they share insertion points, but `Observer` events are sampled and lossy by design; audit events are append-only and hash-chained.
 - **The order in which these ADRs are implemented.** The Seeds backlog (`docs/strategy/runtime-completeness-backlog.md`) pins priorities; the implementation order is a coordinator decision.
 
 ---
@@ -236,7 +236,7 @@ This is **harness-layer** work, not runtime work. The runtime's `Orchestrator.ru
 
 A reader pressed for time should read, in order: §"Executive Summary", §"The Eight Questions" Q1–Q8, §"Recommendations Table". Everything else is supporting context.
 
-The "Current Runtime Surface" section is dense with `path:line` anchors and is meant to be read with the codebase open. The eight question sections each end with `**Anchors.**` listing the file:line citations that ground the recommendation. ADRs 0031–0034 inherit those anchors; the Seeds backlog inherits them too.
+The "Current Runtime Surface" section is dense with `path:line` anchors and is meant to be read with the codebase open. The eight question sections each end with `**Anchors.**` listing the file:line citations that ground the recommendation. ADRs 0034–0037 inherit those anchors; the Seeds backlog inherits them too.
 
 This document is the **strategic synthesis** that the four ADRs hang off; the ADRs are the **load-bearing commitments** that future work pins against. Conflicts between this document and an ADR resolve in favor of the ADR.
 
@@ -244,6 +244,6 @@ This document is the **strategic synthesis** that the four ADRs hang off; the AD
 
 ## Document Provenance
 
-This document was authored by builder agent `builder-runtime-strategy` for task VIGOR-7724 on 2026-05-15. It synthesizes the existing ADR set as of the same date — explicitly building on the deployment ADRs 0028/0029/0030 and the deployment-and-ops strategy doc (sibling branch, 2026-05-15) — and the runtime code as of the worktree commit. Companion deliverables in the same branch: ADRs 0031–0034 (parallel best-of-N, single-node posture, checkpoint/resume, observability seam) and the runtime-completeness Seeds backlog. The expectation is that this document moves to `Status: Accepted` once the four ADRs land; until then, every recommendation is provisional on those ADRs agreeing.
+This document was authored by builder agent `builder-runtime-strategy` for task VIGOR-7724 on 2026-05-15. It synthesizes the existing ADR set as of the same date — explicitly building on the deployment ADRs 0028/0029/0030 and the deployment-and-ops strategy doc (sibling branch, 2026-05-15) — and the runtime code as of the worktree commit. Companion deliverables in the same branch: ADRs 0034–0037 (parallel best-of-N, single-node posture, checkpoint/resume, observability seam) and the runtime-completeness Seeds backlog. The expectation is that this document moves to `Status: Accepted` once the four ADRs land; until then, every recommendation is provisional on those ADRs agreeing.
 
 For the architecture lead's convenience, every recommendation in §"The Eight Questions" is anchored to a `file:line` citation that can be opened directly. Classification labels (`foundational`, `tactical`, `observational`, `future`) are stable across the document and feed the Seeds backlog verbatim, matching the convention established by `docs/strategy/deployment-and-ops.md`.

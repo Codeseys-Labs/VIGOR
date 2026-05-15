@@ -6,7 +6,7 @@ consulted: [builder-runtime-strategy]
 informed: [coordinator]
 ---
 
-# ADR-0033: Iteration-Boundary Checkpoint And Opt-In Resume Via `Orchestrator.resume(run_id)`
+# ADR-0036: Iteration-Boundary Checkpoint And Opt-In Resume Via `Orchestrator.resume(run_id)`
 
 ## Context and Problem Statement
 
@@ -41,7 +41,7 @@ The opt-in vs default question: should resume happen automatically when the orch
 - **Atomicity guarantees of the existing archive.** Per-record JSON writes are the established pattern. A checkpoint is just one more JSON file written atomically (write-then-rename). No new persistence layer.
 - **Backend identity is unrecoverable.** The Claude Agent SDK's `ResultMessage`-bearing conversation, the Strands agent's session, the MCP servers' subprocess state — none of it survives a process crash. Resume must accept this and rebuild backends from scratch on resume.
 - **Default-preserving change.** Existing operators who today re-run a failed task expect to start over. Auto-resume would change that behavior silently. Resume must be opt-in.
-- **Single-node-by-contract (ADR-0032).** Resume is a single-process operation against a single-archive directory. The advisory lock from ADR-0032 ensures the resuming orchestrator is the only writer; concurrent-resume is undefined and unsupported.
+- **Single-node-by-contract (ADR-0035).** Resume is a single-process operation against a single-archive directory. The advisory lock from ADR-0035 ensures the resuming orchestrator is the only writer; concurrent-resume is undefined and unsupported.
 - **No additional dependencies.** No write-ahead log, no SQLite, no separate transaction coordinator. The checkpoint is a Pydantic model serialized to JSON, identical in shape to every other archive record.
 
 ## Considered Options
@@ -107,7 +107,7 @@ The opt-in story is concrete: if a user calls `await agent.run(task)` with a `ta
 
 | Alternative | Reason Rejected |
 | --- | --- |
-| Per-candidate checkpoint | Maximum granularity. The cost is N× more writes per iteration (one per candidate), and the value is "lose at most one candidate's work" — but with parallel best-of-N (ADR-0031), candidates within a batch are concurrent and a per-candidate checkpoint after each one is racy (which candidate wrote it last?). A per-batch checkpoint after the parallel batch finishes is structurally identical to iteration-boundary checkpointing, since the batch *is* the iteration's evaluation phase. The granularity gain is illusory. |
+| Per-candidate checkpoint | Maximum granularity. The cost is N× more writes per iteration (one per candidate), and the value is "lose at most one candidate's work" — but with parallel best-of-N (ADR-0034), candidates within a batch are concurrent and a per-candidate checkpoint after each one is racy (which candidate wrote it last?). A per-batch checkpoint after the parallel batch finishes is structurally identical to iteration-boundary checkpointing, since the batch *is* the iteration's evaluation phase. The granularity gain is illusory. |
 | Auto-resume on archive presence | Changes existing semantics silently. An operator who today retries a failed run by re-running gets a started-over run; with auto-resume they get a resumed run, which may be desirable but is not what they asked for. The behavior change is the *exact* failure mode — a runtime that does something different than what the operator expects, with no signal. Resume must be explicit. |
 | Defer to v2 | The largest single operator-pain mitigation in the runtime backlog. A 60-minute run that crashes at minute 55 and starts over at minute 0 is the kind of incident that drives operators away from a framework. Deferring this past v1.0 makes "production-grade VIGOR" structurally fragile. |
 | Write-ahead log | Database-style transaction model. Solves the per-candidate-recovery case the iteration-boundary checkpoint does not, at the cost of a new persistence shape, replay logic, and a serialization format orthogonal to the per-record JSONs the archive already uses. The 80/20 case is covered by iteration-boundary checkpointing; the remaining 20% (per-candidate recovery) is not yet a documented operator request. If ever requested, a WAL can be layered on top of the iteration-boundary checkpoint without breaking it. |
@@ -136,7 +136,7 @@ The opt-in story is concrete: if a user calls `await agent.run(task)` with a `ta
 1. **Long runs survive crashes.** A 60-minute run that crashes at minute 55 can resume from the most recent iteration boundary with one command. The vast majority of lost-work pain is recovered.
 2. **No new persistence layer.** The checkpoint is one more JSON file in the archive directory. Operators familiar with the archive layout already know how to debug it.
 3. **Existing semantics preserved.** `agent.run(task)` with a previously-used `task_id` starts over, exactly as today. Resume is explicit.
-4. **Composes with parallel best-of-N (ADR-0031).** Per-batch fanout finishes; checkpoint writes after; resume re-enters at the next iteration. No race conditions.
+4. **Composes with parallel best-of-N (ADR-0034).** Per-batch fanout finishes; checkpoint writes after; resume re-enters at the next iteration. No race conditions.
 5. **Composes with cost ceiling (ADR-0028).** Resume starts a new cost counter; explicit operator action (lowering `max_cost_usd`) controls the resumed budget. No silent budget extension across crashes.
 
 ### Negative
@@ -151,7 +151,7 @@ The opt-in story is concrete: if a user calls `await agent.run(task)` with a `ta
 
 1. The new `IterationCheckpoint` schema follows the existing `_VigorBase` config (`schemas.py:21-32`): strict mode, `extra="forbid"`, alias_generator. Indistinguishable from every other schema in shape.
 2. `Orchestrator.resume(run_id)` is opt-in. Operators who never call it pay zero cost (one extra filesystem write per iteration is the only cost they pay; they can ignore the new file).
-3. The advisory lock (ADR-0032) ensures only one process is resuming at a time. Concurrent-resume is undefined; the lock prevents it.
+3. The advisory lock (ADR-0035) ensures only one process is resuming at a time. Concurrent-resume is undefined; the lock prevents it.
 
 ## References
 
@@ -166,6 +166,6 @@ The opt-in story is concrete: if a user calls `await agent.run(task)` with a `ta
 | ADR-0011 (IR schema versioning — pattern for `vigor.iteration_checkpoint.v1`) | `0011-ir-schema-versioning.md` |
 | ADR-0028 (cost ceiling — bounded-overshoot precedent and budget-on-resume rule) | `0028-cost-ceiling-enforcement.md` |
 | ADR-0030 (library-first posture — resume must work in-library, not CLI-only) | `0030-library-first-deployment-posture.md` |
-| ADR-0031 (parallel best-of-N — per-batch fanout interacts with iteration-boundary checkpointing) | `0031-parallel-best-of-n-via-asyncio-gather.md` |
-| ADR-0032 (single-node posture — advisory lock prevents concurrent resume) | `0032-single-node-orchestrator-posture.md` |
+| ADR-0034 (parallel best-of-N — per-batch fanout interacts with iteration-boundary checkpointing) | `0034-parallel-best-of-n-via-asyncio-gather.md` |
+| ADR-0035 (single-node posture — advisory lock prevents concurrent resume) | `0035-single-node-orchestrator-posture.md` |
 | Strategic summary | `docs/strategy/runtime-completeness.md` §Q3 |

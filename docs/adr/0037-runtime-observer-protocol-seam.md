@@ -6,7 +6,7 @@ consulted: [builder-runtime-strategy]
 informed: [coordinator]
 ---
 
-# ADR-0034: Runtime Observability Via A `RuntimeObserver` Protocol Seam, No Hard SDK Dependency
+# ADR-0037: Runtime Observability Via A `RuntimeObserver` Protocol Seam, No Hard SDK Dependency
 
 ## Context and Problem Statement
 
@@ -113,7 +113,7 @@ The lifecycle is mapped to the orchestrator's existing seams:
 - `on_iteration_start` — top of the iteration loop, after the wall-clock budget check (`orchestrator.py:115-118`).
 - `on_candidate_start` — start of `_evaluate_candidate` (`orchestrator.py:277-282`).
 - `on_candidate_end` — end of `_evaluate_candidate`, just before the return (`orchestrator.py:354`). Three positions for the three early-return paths (validation failure, compile failure, success); all three call `on_candidate_end` with the appropriate result.
-- `on_iteration_end` — bottom of the iteration body, alongside the new checkpoint write from ADR-0033.
+- `on_iteration_end` — bottom of the iteration body, alongside the new checkpoint write from ADR-0036.
 - `on_run_end` — bottom of `Orchestrator.run`, just before the `return RunResult(...)` (`orchestrator.py:243-250`).
 - `on_event` — open-ended; the runtime emits a few canonical events (e.g. `name="patch_applied"`, `name="export_failed"`) but the surface is intentionally extensible. Observers receive any event the runtime decides to emit.
 
@@ -156,12 +156,12 @@ The `vigor-agent` `AgentOrchestrator` accepts an `observer` kwarg in its constru
 1. **Zero-dependency default.** Library users who never attach an observer pay nothing. No new packages installed, no import-time cost, no runtime overhead beyond the `if self._observer is not None` check at each emission site.
 2. **Composable with any downstream sink.** A `vigor-observability-otel` package implements the Protocol against OpenTelemetry; a `vigor-observability-prometheus` package implements it against `prometheus_client`; a `vigor-server` deployment composes both. None of those choices touch the library.
 3. **Type-checked lifecycle.** Pydantic models flow through the lifecycle methods (`TaskSpec`, `CompileResult`, `ReviewReport`, `AdjudicationReport`). Observer implementations get full type information, which is what enables clean OpenTelemetry span attribution and clean Prometheus label sets.
-4. **Sibling-ADR consistency.** ADR-0028's `Usage` becomes a natural attribute on `on_candidate_end` (via the per-candidate usage extension to ADR-0028's Seeds). ADR-0033's iteration-checkpoint write fits naturally alongside `on_iteration_end`. ADR-0031's parallel batches still emit one `on_candidate_end` per candidate (concurrent emission; observers must be thread-safe — documented).
+4. **Sibling-ADR consistency.** ADR-0028's `Usage` becomes a natural attribute on `on_candidate_end` (via the per-candidate usage extension to ADR-0028's Seeds). ADR-0036's iteration-checkpoint write fits naturally alongside `on_iteration_end`. ADR-0034's parallel batches still emit one `on_candidate_end` per candidate (concurrent emission; observers must be thread-safe — documented).
 5. **Observer bugs don't break runs.** The `try / except Exception` wrapper around every observer call catches misbehaving observers and continues. Errors are logged but don't propagate.
 
 ### Negative
 
-1. **Concurrent emission under parallel best-of-N.** ADR-0031's batched fanout means multiple `on_candidate_start` and `on_candidate_end` calls fire concurrently. Observer implementations must be thread-safe (or, more accurately, async-safe — they run inside the event loop). The Protocol documentation will say so explicitly. OpenTelemetry's tracer is async-safe; `prometheus_client` is thread-safe via its internal locks; naive observers (a custom one with shared mutable state) need to use `asyncio.Lock` or be careful. This is a documented constraint, not a runtime guarantee.
+1. **Concurrent emission under parallel best-of-N.** ADR-0034's batched fanout means multiple `on_candidate_start` and `on_candidate_end` calls fire concurrently. Observer implementations must be thread-safe (or, more accurately, async-safe — they run inside the event loop). The Protocol documentation will say so explicitly. OpenTelemetry's tracer is async-safe; `prometheus_client` is thread-safe via its internal locks; naive observers (a custom one with shared mutable state) need to use `asyncio.Lock` or be careful. This is a documented constraint, not a runtime guarantee.
 2. **No standardized attribute schema.** `on_event(name, attributes)` accepts any `dict[str, object]`. Observers expecting OpenTelemetry semantic conventions (HTTP, gen-ai, etc.) need to map VIGOR's events to those conventions themselves. The runtime does not commit to an attribute taxonomy beyond the lifecycle method signatures. The implementing builder will document the attribute keys for the canonical events the runtime emits (`patch_applied`, `export_failed`, etc.).
 3. **Observer methods are sync, not async.** Calling `await` inside an observer method would require awaiting in the runtime, which means observers can block the event loop indefinitely. The Protocol declares sync methods to make this constraint visible. Observers that need to do async work (e.g. ship spans to a remote OTel collector) must spawn a background task themselves; the runtime will not. This is a known constraint of OpenTelemetry's Python tracer too — span recording is sync; export is async behind the scenes.
 4. **No built-in trace-context propagation.** OpenTelemetry expects `traceparent` to flow into downstream calls (MCP servers, agent backends). The library does not propagate it — that is an observer-implementation concern. The deployment-and-ops sibling doc commits the `vigor-server` layer to header propagation; the library exposes the seam (`on_event` with `traceparent` as an attribute) but does not wire it.
@@ -186,8 +186,8 @@ The `vigor-agent` `AgentOrchestrator` accepts an `observer` kwarg in its constru
 | ADR-0010 (async core interfaces — pattern for protocol-shaped extension points) | `0010-async-core-interfaces.md` |
 | ADR-0028 (cost ceilings — `Usage` as a `on_candidate_end` attribute) | `0028-cost-ceiling-enforcement.md` |
 | ADR-0030 (library-first — telemetry sinks are deployment-layer choices) | `0030-library-first-deployment-posture.md` |
-| ADR-0031 (parallel best-of-N — observer must be async-safe) | `0031-parallel-best-of-n-via-asyncio-gather.md` |
-| ADR-0033 (checkpoint/resume — `on_iteration_end` fires alongside checkpoint write) | `0033-iteration-checkpoint-resume.md` |
+| ADR-0034 (parallel best-of-N — observer must be async-safe) | `0034-parallel-best-of-n-via-asyncio-gather.md` |
+| ADR-0036 (checkpoint/resume — `on_iteration_end` fires alongside checkpoint write) | `0036-iteration-checkpoint-resume.md` |
 | Strategic summary | `docs/strategy/runtime-completeness.md` §Q5 |
 | Deployment observability commitment (sibling layer) | `docs/strategy/deployment-and-ops.md` §"Observability And Telemetry" |
 | PEP 544 (Python `Protocol`) | https://peps.python.org/pep-0544/ |

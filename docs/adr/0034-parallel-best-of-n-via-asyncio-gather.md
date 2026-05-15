@@ -6,7 +6,7 @@ consulted: [builder-runtime-strategy]
 informed: [coordinator]
 ---
 
-# ADR-0031: Parallel Best-of-N Via `asyncio.gather` Gated By `Budgets.parallel_candidates`
+# ADR-0034: Parallel Best-of-N Via `asyncio.gather` Gated By `Budgets.parallel_candidates`
 
 ## Context and Problem Statement
 

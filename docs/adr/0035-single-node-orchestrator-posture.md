@@ -6,7 +6,7 @@ consulted: [builder-runtime-strategy]
 informed: [coordinator]
 ---
 
-# ADR-0032: VIGOR-The-Library Is Single-Node By Contract; Defer Distributed Orchestration
+# ADR-0035: VIGOR-The-Library Is Single-Node By Contract; Defer Distributed Orchestration
 
 ## Context and Problem Statement
 
@@ -110,7 +110,7 @@ For the multi-replica future: when `vigor-server` lands, it will pick its own ar
 
 1. **Two simultaneous `agent.run(task)` calls in the same process are unsupported and undetected.** Advisory locks are per-process on POSIX — a second `agent.run` in the same process does not see the lock as held by another. The library documents this as "unsupported" but does not detect it. Operators who run concurrent runs in the same process (e.g. `asyncio.gather(agent.run(t1), agent.run(t2))`) corrupt the archive silently. Mitigation: the `Orchestrator` could add a per-run-id reentrance check; this is filed as a follow-up Seeds task `VIGOR-c2ec` (see backlog).
 2. **Network filesystems may misbehave.** `fcntl.flock` on NFS has historically been unreliable (NFSv3 silently no-ops; NFSv4 is better). Operators using a network-filesystem `archive_dir` may see the lock acquired but not effectively held across nodes. The runtime cannot detect this; the library's documentation will say "shared-filesystem archive directories are unsupported." Operators in that case need a coordination primitive the hosting layer provides — and per ADR-0030, that is `vigor-server`'s job, not the library's.
-3. **No graceful waiting.** The non-blocking lock fails immediately. There is no "wait for the existing process to finish, then take the lock." Operators who want sequenced multi-process runs (rare, but plausible for batch jobs) write a wrapper script that retries on `ArchiveLockedError` with a sleep. The runtime does not provide a wait primitive — that is a coordination feature, which ADR-0032 is committing not to ship.
+3. **No graceful waiting.** The non-blocking lock fails immediately. There is no "wait for the existing process to finish, then take the lock." Operators who want sequenced multi-process runs (rare, but plausible for batch jobs) write a wrapper script that retries on `ArchiveLockedError` with a sleep. The runtime does not provide a wait primitive — that is a coordination feature, which ADR-0035 is committing not to ship.
 4. **A new exception (`ArchiveLockedError`) widens the public error surface.** Per ADR-0030's tight public-surface stance, every new exposed exception is an ADR-level commitment. This is one. The exception is added to `vigor_core.errors` and surfaces in `RunArchive.__init__`. Sibling builders writing `vigor-server` will need to know about it; the docs will say so.
 
 ### Neutral
