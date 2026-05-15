@@ -25,6 +25,10 @@ VIGOR records architectural decisions as ADRs in this directory. New ADRs (ADR-0
 | [ADR-0031](0031-harness-v2-architecture.md) | Harness v2 Architecture — Proposer, Comparator, RegressionDetector | proposed | 2026-05-15 |
 | [ADR-0032](0032-benchmark-methodology-and-reproducibility.md) | Benchmark Methodology, Contamination Controls, And Reproducibility | proposed | 2026-05-15 |
 | [ADR-0033](0033-promotion-gate-logic.md) | Promotion Gate Pipeline And Cost-Aware Sampling | proposed | 2026-05-15 |
+| [ADR-0034](0034-parallel-best-of-n-via-asyncio-gather.md) | Parallel Best-of-N Via `asyncio.gather` Gated By `Budgets.parallel_candidates` | proposed | 2026-05-15 |
+| [ADR-0035](0035-single-node-orchestrator-posture.md) | VIGOR-The-Library Is Single-Node By Contract; Defer Distributed Orchestration | proposed | 2026-05-15 |
+| [ADR-0036](0036-iteration-checkpoint-resume.md) | Iteration-Boundary Checkpoint And Opt-In Resume Via `Orchestrator.resume(run_id)` | proposed | 2026-05-15 |
+| [ADR-0037](0037-runtime-observer-protocol-seam.md) | Runtime Observability Via A `RuntimeObserver` Protocol Seam, No Hard SDK Dependency | proposed | 2026-05-15 |
 
 ADR-0014 (Generalized Agent Configuration) and ADR-0015 (Open Plugin Spec v1 Compatibility) were authored on the unmerged `claude/agent-adapter-framework-1KOmV` feature branch and will appear in this index when that branch lands. ADR-0017 and ADR-0018 are written to land alongside them; ADR-0018 amends a single deferral row in ADR-0015's Alternatives table, all four are mutually referencing.
 
