@@ -20,5 +20,10 @@ VIGOR records architectural decisions as ADRs in this directory. New ADRs (ADR-0
 | [ADR-0028](0028-cost-ceiling-enforcement.md) | Enforce Cost Ceilings Via AgentBackend Usage Telemetry And A RunBudgetTracker | proposed | 2026-05-15 |
 | [ADR-0029](0029-multi-tenant-subprocess-env-hardening.md) | Default-Drop Subprocess Environment For MCP Stdio And Per-Tenant Run Archive Scoping | proposed | 2026-05-15 |
 | [ADR-0030](0030-library-first-deployment-posture.md) | Ship VIGOR As Library + CLI; Defer Hosted vigor-server As Downstream Concern | proposed | 2026-05-15 |
+| [ADR-0031](0031-harness-v2-architecture.md) | Harness v2 Architecture — Proposer, Comparator, RegressionDetector | proposed | 2026-05-15 |
+| [ADR-0032](0032-benchmark-methodology-and-reproducibility.md) | Benchmark Methodology, Contamination Controls, And Reproducibility | proposed | 2026-05-15 |
+| [ADR-0033](0033-promotion-gate-logic.md) | Promotion Gate Pipeline And Cost-Aware Sampling | proposed | 2026-05-15 |
 
 ADR-0014 (Generalized Agent Configuration) and ADR-0015 (Open Plugin Spec v1 Compatibility) were authored on the unmerged `claude/agent-adapter-framework-1KOmV` feature branch and will appear in this index when that branch lands. ADR-0017 and ADR-0018 are written to land alongside them; ADR-0018 amends a single deferral row in ADR-0015's Alternatives table, all four are mutually referencing.
+
+ADR-0031, ADR-0032, and ADR-0033 are mutually-referencing harness-v2 drafts (parent VIGOR-455f) and land alongside `docs/strategy/harness-v2.md` and `docs/strategy/harness-backlog.md` on the same merge cycle.
