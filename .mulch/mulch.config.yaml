@@ -7,6 +7,7 @@ domains:
   adr: {}
   vigor-agent: {}
   vigor-core: {}
+  vigor-runtime: {}
 governance:
   max_entries: 100
   warn_entries: 150
