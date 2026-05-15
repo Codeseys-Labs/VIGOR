@@ -11,6 +11,7 @@ from vigor_core.agent_config import (
 from vigor_core.archive import RunArchive
 from vigor_core.errors import (
     AdapterContractError,
+    ArchiveLockedError,
     BudgetExceededError,
     CompileError,
     ExportError,
@@ -100,6 +101,7 @@ __all__ = [
     "AdjudicationReport",
     "AgentBackend",
     "AgentConfig",
+    "ArchiveLockedError",
     "ArtifactIR",
     "BackendSpec",
     "BudgetExceededError",

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import sys
+import threading
+import weakref
 from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from vigor_core.errors import SchemaValidationError
+from vigor_core.errors import ArchiveLockedError, SchemaValidationError
 from vigor_core.schemas import (
     AdapterManifest,
     AdjudicationReport,
@@ -40,11 +45,168 @@ def _load(path: Path, cls: type[T]) -> T:
         ) from exc
 
 
+_LOCK_FILENAME = ".archive.lock"
+
+
+class _ArchiveLockHolder:
+    """Process-local advisory lock on an archive root.
+
+    POSIX uses ``fcntl.flock(LOCK_EX | LOCK_NB)``; Windows uses
+    ``msvcrt.locking(LK_NBLCK, 1)``. Both are released by the OS on process
+    exit (so ``kill -9`` is recoverable on next start) and surface a clear
+    failure when a peer process already holds the lock.
+
+    POSIX advisory locks are per-process: a second ``flock`` from the same
+    process on a different fd to the same file *succeeds*. Windows
+    ``msvcrt.locking`` is per-fd and would otherwise refuse same-process
+    re-entry. The module-level refcount registry below makes both platforms
+    behave the same way: the first opener acquires the OS lock; subsequent
+    openers in the same process share the holder. The orchestrator's
+    long-lived ``RunArchive`` plus a transient archive constructed by an
+    adapter ``export()`` (e.g. ``vigor_adapter_cad.adapter:RunArchive(...)``)
+    coexist without a spurious ``ArchiveLockedError``.
+    """
+
+    __slots__ = ("_fd", "_path", "_released")
+
+    def __init__(self, root: Path) -> None:
+        self._path = root / _LOCK_FILENAME
+        self._released = False
+        self._fd: int | None = None
+        try:
+            fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError as exc:
+            raise ArchiveLockedError(
+                f"failed to open archive lock file {self._path}: {exc}",
+                evidence_uri=str(self._path),
+            ) from exc
+        try:
+            _platform_lock(fd)
+        except BlockingIOError as exc:
+            os.close(fd)
+            raise ArchiveLockedError(
+                f"another process holds the archive lock {self._path}; "
+                "VIGOR archives are single-node by contract (ADR-0035)",
+                evidence_uri=str(self._path),
+            ) from exc
+        except OSError as exc:
+            os.close(fd)
+            raise ArchiveLockedError(
+                f"failed to acquire archive lock {self._path}: {exc}",
+                evidence_uri=str(self._path),
+            ) from exc
+        self._fd = fd
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        fd = self._fd
+        self._fd = None
+        if fd is None:
+            return
+        try:
+            _platform_unlock(fd)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+if sys.platform == "win32":  # pragma: no cover - exercised on Windows only
+    import msvcrt
+
+    def _platform_lock(fd: int) -> None:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _platform_unlock(fd: int) -> None:
+        with contextlib.suppress(OSError):
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _platform_lock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _platform_unlock(fd: int) -> None:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+class _LockRegistry:
+    """Process-local refcount of active archive locks, keyed on resolved root."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[str, tuple[_ArchiveLockHolder, int]] = {}
+
+    def acquire(self, root: Path) -> str:
+        key = str(root.resolve())
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                holder, count = entry
+                self._entries[key] = (holder, count + 1)
+                return key
+            # Not yet held in this process — take the OS lock.
+            holder = _ArchiveLockHolder(root)
+            self._entries[key] = (holder, 1)
+            return key
+
+    def release(self, key: str) -> None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return
+            holder, count = entry
+            if count > 1:
+                self._entries[key] = (holder, count - 1)
+                return
+            del self._entries[key]
+        holder.release()
+
+
+_REGISTRY = _LockRegistry()
+
+
 class RunArchive:
-    """Persist every record the orchestrator produces."""
+    """Persist every record the orchestrator produces.
+
+    Acquires an exclusive non-blocking advisory lock on
+    ``<root>/.archive.lock`` for the lifetime of the instance. A second
+    process that opens the same archive root raises
+    :class:`vigor_core.errors.ArchiveLockedError`. Same-process re-opens
+    (e.g. an adapter ``export()`` constructing a transient ``RunArchive``)
+    share the lock via a refcount registry. See ADR-0035 for the
+    single-node-by-contract rationale.
+
+    Call :meth:`close` to release the lock; ``weakref.finalize`` releases
+    it as a safety net if ``close`` is not called before the object is
+    garbage-collected.
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._lock_key: str | None = _REGISTRY.acquire(self.root)
+        self._finalizer = weakref.finalize(self, _REGISTRY.release, self._lock_key)
+
+    def close(self) -> None:
+        """Release the archive lock. Idempotent."""
+
+        key = self._lock_key
+        if key is None:
+            return
+        self._lock_key = None
+        # detach() prevents the finalizer from double-releasing; we release
+        # explicitly so the OS lock drops promptly instead of waiting for GC.
+        if self._finalizer.detach() is not None:
+            _REGISTRY.release(key)
+
+    def __enter__(self) -> RunArchive:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def run_dir(self, run_id: str) -> Path:
         return self._safe_target(run_id)

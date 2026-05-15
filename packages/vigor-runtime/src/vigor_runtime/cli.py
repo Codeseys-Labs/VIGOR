@@ -49,25 +49,28 @@ def demo(
     """Run the end-to-end toy adapter loop using the echo backend."""
 
     archive = RunArchive(runs_dir)
-    adapter = ToyTextAdapter()
+    try:
+        adapter = ToyTextAdapter()
 
-    def seed(request: GenerationRequest) -> dict[str, Any]:
-        return {"text": request.task.goal}
+        def seed(request: GenerationRequest) -> dict[str, Any]:
+            return {"text": request.task.goal}
 
-    backend = EchoAgentBackend(seed_ir_factory=seed)
-    orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive)
+        backend = EchoAgentBackend(seed_ir_factory=seed)
+        orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive)
 
-    task = TaskSpec(
-        task_id=task_id,
-        goal=goal,
-        modalities=["toy_text"],
-        target_outputs=["output.txt"],
-    )
-    result = asyncio.run(orchestrator.run(task))
-    typer.echo(
-        f"run_id={result.run_id} accepted={result.accepted} "
-        f"stop_reason={result.stop_reason} selected={result.selected_candidate_id}"
-    )
+        task = TaskSpec(
+            task_id=task_id,
+            goal=goal,
+            modalities=["toy_text"],
+            target_outputs=["output.txt"],
+        )
+        result = asyncio.run(orchestrator.run(task))
+        typer.echo(
+            f"run_id={result.run_id} accepted={result.accepted} "
+            f"stop_reason={result.stop_reason} selected={result.selected_candidate_id}"
+        )
+    finally:
+        archive.close()
 
 
 if __name__ == "__main__":

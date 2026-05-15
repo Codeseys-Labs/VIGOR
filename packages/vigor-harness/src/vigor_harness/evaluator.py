@@ -57,33 +57,36 @@ async def evaluate_candidate(
     candidate_dir = output_dir / candidate.candidate_id
     candidate_dir.mkdir(parents=True, exist_ok=True)
     archive = RunArchive(candidate_dir / "runs")
-    n_succeeded = 0
-    composites: list[float] = []
-    hard_gate_passes = 0
-    for task in tasks:
-        # Backend lifecycle is owned per Orchestrator.run(), so instantiate per task.
-        adapter = adapter_factory()
-        backend = backend_factory()
-        if not isinstance(adapter, DomainAdapter):
-            raise TypeError("adapter_factory did not return a DomainAdapter")
-        if not isinstance(backend, AgentBackend):
-            raise TypeError("backend_factory did not return an AgentBackend")
-        orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive)
-        result = await orchestrator.run(task)
-        if result.accepted:
-            n_succeeded += 1
-        frontier_path = archive.run_dir(task.task_id) / "frontier.json"
-        if frontier_path.exists():
-            frontier = json.loads(frontier_path.read_text(encoding="utf-8"))
-            selected = next(
-                (c for c in frontier.get("candidates", []) if c.get("status") == "selected"),
-                None,
-            )
-            if selected is not None:
-                hard_gate_passes += 1 if selected.get("hardGatePassed") else 0
-                composite = selected.get("scores", {}).get("composite")
-                if isinstance(composite, int | float):
-                    composites.append(float(composite))
+    try:
+        n_succeeded = 0
+        composites: list[float] = []
+        hard_gate_passes = 0
+        for task in tasks:
+            # Backend lifecycle is owned per Orchestrator.run(), so instantiate per task.
+            adapter = adapter_factory()
+            backend = backend_factory()
+            if not isinstance(adapter, DomainAdapter):
+                raise TypeError("adapter_factory did not return a DomainAdapter")
+            if not isinstance(backend, AgentBackend):
+                raise TypeError("backend_factory did not return an AgentBackend")
+            orchestrator = Orchestrator(adapter=adapter, backend=backend, archive=archive)
+            result = await orchestrator.run(task)
+            if result.accepted:
+                n_succeeded += 1
+            frontier_path = archive.run_dir(task.task_id) / "frontier.json"
+            if frontier_path.exists():
+                frontier = json.loads(frontier_path.read_text(encoding="utf-8"))
+                selected = next(
+                    (c for c in frontier.get("candidates", []) if c.get("status") == "selected"),
+                    None,
+                )
+                if selected is not None:
+                    hard_gate_passes += 1 if selected.get("hardGatePassed") else 0
+                    composite = selected.get("scores", {}).get("composite")
+                    if isinstance(composite, int | float):
+                        composites.append(float(composite))
+    finally:
+        archive.close()
     n_tasks = len(tasks)
     report = HarnessEvalReport(
         candidate_id=candidate.candidate_id,

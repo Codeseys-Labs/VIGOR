@@ -29,6 +29,8 @@ runs/
 reviewers/
 .vigor_cache/
 *.xmp.bak
+.archive.lock
+**/.archive.lock
 
 # Secrets
 .env
