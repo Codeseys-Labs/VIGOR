@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "vigor",
     "vigor-adapter-cad",
+    "vigor-adapter-doc",
     "vigor-adapter-photo",
     "vigor-adapter-video-manim",
     "vigor-agent",
@@ -1815,6 +1816,21 @@ dev = [
 name = "vigor-adapter-cad"
 version = "0.1.0"
 source = { editable = "packages/vigor-adapter-cad" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "vigor-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "vigor-core", editable = "packages/vigor-core" },
+]
+
+[[package]]
+name = "vigor-adapter-doc"
+version = "0.1.0"
+source = { editable = "packages/vigor-adapter-doc" }
 dependencies = [
     { name = "pydantic" },
     { name = "vigor-core" },
