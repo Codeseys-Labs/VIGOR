@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from vigor_core.agent_config import MCPServerSpec
 from vigor_core.audit import AuditEvent, AuditOutcome, AuditSink
+from vigor_core.errors import VigorError
 from vigor_core.interfaces import ToolBackend, ToolResult
 from vigor_core.schemas import ToolManifest
 from vigor_core.util import sha256_text, stable_json
@@ -25,6 +26,15 @@ from vigor_core.util import sha256_text, stable_json
 from vigor_mcp.manifest import mcp_tool_to_manifest
 
 EventIdFactory = Callable[[], str]
+SleepFn = Callable[[float], Awaitable[None]]
+# Default to zero retries at the constructor seam so direct construction
+# preserves the legacy single-attempt behavior; the agent wiring layer
+# (AgentOrchestrator._build_tool_backend) reads ``Budgets.max_tool_retries``
+# off ``AgentConfig.budgets`` and threads it into ``from_specs`` so production
+# runs default to the Budgets value (2 today). Production opts in; tests stay
+# byte-identical unless they pass max_tool_retries explicitly.
+_DEFAULT_MAX_TOOL_RETRIES = 0
+_DEFAULT_RETRY_BASE_DELAY_S = 0.1
 
 
 class MCPBackendError(RuntimeError):
@@ -124,11 +134,18 @@ class MCPToolBackend(ToolBackend):
         run_id: str | None = None,
         tenant_id: str | None = None,
         event_id_factory: EventIdFactory | None = None,
+        max_tool_retries: int = _DEFAULT_MAX_TOOL_RETRIES,
+        retry_base_delay_s: float = _DEFAULT_RETRY_BASE_DELAY_S,
+        sleep: SleepFn | None = None,
     ) -> None:
         if session_opener is None:
             from vigor_mcp.transports.sdk import open_session
 
             session_opener = open_session
+        if max_tool_retries < 0:
+            raise ValueError(f"max_tool_retries must be >= 0, got {max_tool_retries!r}")
+        if retry_base_delay_s < 0:
+            raise ValueError(f"retry_base_delay_s must be >= 0, got {retry_base_delay_s!r}")
         self._opener = session_opener
         self._handles: dict[str, _ServerHandle] = {
             spec.server_id: _ServerHandle(spec) for spec in specs
@@ -140,10 +157,18 @@ class MCPToolBackend(ToolBackend):
         self._event_id_factory: EventIdFactory = (
             event_id_factory if event_id_factory is not None else _default_event_id
         )
+        self._max_tool_retries = max_tool_retries
+        self._retry_base_delay_s = retry_base_delay_s
+        self._sleep: SleepFn = sleep if sleep is not None else asyncio.sleep
 
     @classmethod
-    def from_specs(cls, specs: list[MCPServerSpec]) -> MCPToolBackend:
-        return cls(specs)
+    def from_specs(
+        cls,
+        specs: list[MCPServerSpec],
+        *,
+        max_tool_retries: int = _DEFAULT_MAX_TOOL_RETRIES,
+    ) -> MCPToolBackend:
+        return cls(specs, max_tool_retries=max_tool_retries)
 
     async def list_tools(self) -> list[ToolManifest]:
         results: list[ToolManifest] = []
@@ -165,31 +190,87 @@ class MCPToolBackend(ToolBackend):
             await self._emit_audit(tool_id, payload, "denied")
             return gate
         assert handle is not None
+
+        # Retry loop bounded by max_tool_retries (Budgets.max_tool_retries).
+        # max_tool_retries=N means up to N+1 total attempts (1 initial + N retries).
+        # Only transient failures retry: timeouts, transient transport errors
+        # (MCPBackendError / OSError / RuntimeError on the call path), and
+        # VigorErrors marked retryable=True. ToolResult-shaped failures from
+        # the server (isError=True) are NOT retried — those are
+        # application-level outcomes, not infrastructure blips. Audit is
+        # emitted exactly once at the call boundary with the final outcome
+        # so the sink-owned hash chain (mx-0eae76) does not see per-attempt
+        # events for what callers see as one logical call.
+        max_attempts = self._max_tool_retries + 1
+        result: ToolResult
+        for attempt in range(max_attempts):
+            result, retryable = await self._dispatch_once(handle, tool_id, tool_name, payload)
+            if not retryable or attempt == max_attempts - 1:
+                break
+            await self._sleep(self._retry_base_delay_s * (2**attempt))
+        await self._emit_audit(tool_id, payload, result.status)
+        return result
+
+    async def _dispatch_once(
+        self,
+        handle: _ServerHandle,
+        tool_id: str,
+        tool_name: str,
+        payload: dict[str, Any],
+    ) -> tuple[ToolResult, bool]:
+        """One attempt at session.call_tool, with timeout / failure mapping.
+
+        Returns ``(result, retryable)``. Does NOT emit audit — the caller
+        emits exactly once after the retry loop settles. ``retryable`` is
+        the bit the loop reads to decide whether to back off and retry;
+        it is independent of ``ToolResult.status`` so a "failure" from a
+        transient transport blip can retry while a "failure" from a
+        non-retryable ``VigorError`` cannot.
+        """
+
         try:
             session = await handle.ensure_open(self._opener)
             # asyncio.wait_for cancels the inner task on timeout but does
             # NOT roll back any session state the call had taken. Tear
-            # down the handle so the next call_tool on this server opens
-            # a fresh session rather than reusing a half-completed one.
+            # down the handle so the next attempt (or next call_tool on
+            # this server) opens a fresh session rather than reusing a
+            # half-completed one.
             try:
-                result = await asyncio.wait_for(
+                raw = await asyncio.wait_for(
                     session.call_tool(tool_name, payload),
                     timeout=handle.spec.timeout_s,
                 )
             except TimeoutError:
                 await handle.aclose()
-                await self._emit_audit(tool_id, payload, "timeout")
-                return ToolResult(
-                    tool_id=tool_id,
-                    status="timeout",
-                    error=f"timed out after {handle.spec.timeout_s}s",
+                return (
+                    ToolResult(
+                        tool_id=tool_id,
+                        status="timeout",
+                        error=f"timed out after {handle.spec.timeout_s}s",
+                    ),
+                    True,
                 )
+        except VigorError as exc:
+            # VigorError carries an explicit ``retryable`` flag (see
+            # vigor_core.errors). ToolTimeoutError / ReviewerError set it
+            # True; schema/validation/contract errors set it False.
+            if exc.retryable:
+                await handle.aclose()
+            return (
+                ToolResult(tool_id=tool_id, status="failure", error=exc.message),
+                exc.retryable,
+            )
         except (MCPBackendError, RuntimeError, OSError) as exc:
-            await self._emit_audit(tool_id, payload, "failure")
-            return ToolResult(tool_id=tool_id, status="failure", error=str(exc))
-        wrapped = self._wrap_result(tool_id, result)
-        await self._emit_audit(tool_id, payload, wrapped.status)
-        return wrapped
+            # Transport-layer transients per the task description:
+            # "timeouts/network blips dominate transient MCP failures".
+            # The session likely held partial state; tear it down so the
+            # next attempt re-handshakes.
+            await handle.aclose()
+            return (
+                ToolResult(tool_id=tool_id, status="failure", error=str(exc)),
+                True,
+            )
+        return self._wrap_result(tool_id, raw), False
 
     async def _emit_audit(
         self,
@@ -207,9 +288,7 @@ class MCPToolBackend(ToolBackend):
         if self._audit_sink is None:
             return
         if self._actor is None or self._run_id is None:
-            raise ValueError(
-                "MCPToolBackend.audit_sink requires actor and run_id at construction"
-            )
+            raise ValueError("MCPToolBackend.audit_sink requires actor and run_id at construction")
         event = AuditEvent(
             event_id=self._event_id_factory(),
             tenant_id=self._tenant_id,
