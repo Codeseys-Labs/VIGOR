@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 from vigor_core.archive import RunArchive
-from vigor_core.errors import VigorError
+from vigor_core.errors import NoCheckpointError, VigorError
 from vigor_core.interfaces import (
     AgentBackend,
     GenerationRequest,
@@ -996,3 +996,117 @@ async def test_tool_backend_aclose_default_is_noop() -> None:
     # Default aclose is a no-op coroutine inherited from the ABC.
     result = await tools.aclose()
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# ADR-0036: iteration-boundary checkpoint + Orchestrator.resume(run_id)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_iteration_checkpoint_written_on_accept(tmp_path: Path) -> None:
+    """A successful run writes a parseable iteration checkpoint."""
+
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    task = TaskSpec(
+        task_id="t_ckpt_accept",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    result = await orchestrator.run(task)
+    assert result.accepted is True
+
+    ckpt = archive.read_checkpoint("t_ckpt_accept")
+    assert ckpt.next_iteration == 1
+    assert ckpt.prior_candidate_ids == ["cand_t_ckpt_accept_0000"]
+    assert ckpt.current_candidate_id is None
+    assert ckpt.last_candidate_id == "cand_t_ckpt_accept_0000"
+    assert {a.type for a in ckpt.activities} >= {"generation", "compile", "review"}
+
+
+@pytest.mark.asyncio
+async def test_iteration_checkpoint_written_on_patch_iteration_end(tmp_path: Path) -> None:
+    """An iteration that ends without acceptance still writes a checkpoint."""
+
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=_ToyAdapterWithAppendPatch(),
+        backend=_FailingReviewBackend(),
+        archive=archive,
+        policy=ScoringPolicy(policy_id="strict", minimums={"quality": 0.5}),
+    )
+    task = TaskSpec(
+        task_id="t_ckpt_patch",
+        goal="require GOOD",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=2, max_candidates=1),
+    )
+    await orchestrator.run(task)
+
+    ckpt = archive.read_checkpoint("t_ckpt_patch")
+    assert ckpt.next_iteration >= 1
+    assert ckpt.prior_candidate_ids
+
+
+@pytest.mark.asyncio
+async def test_resume_continues_from_next_iteration(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    # ``_ToyAdapterWithAppendPatch`` materializes the "append 'GOOD'" patch
+    # objective; ``_FailingReviewBackend`` accepts text containing "GOOD".
+    # First run gets one iteration → patch loop generates a patched IR but
+    # cannot evaluate it (budget cap hit). Resume re-enters at iteration 1
+    # and accepts on the patched IR.
+    orchestrator1 = Orchestrator(
+        adapter=_ToyAdapterWithAppendPatch(),
+        backend=_FailingReviewBackend(),
+        archive=archive,
+        policy=ScoringPolicy(policy_id="strict", minimums={"quality": 0.5}),
+    )
+    task = TaskSpec(
+        task_id="t_resume",
+        goal="require GOOD",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    first = await orchestrator1.run(task)
+    assert first.accepted is False
+
+    ckpt = archive.read_checkpoint("t_resume")
+    assert ckpt.next_iteration == 1
+    assert ckpt.current_candidate_id is not None  # patched IR awaiting evaluation
+
+    bumped = task.model_copy(update={"budgets": Budgets(max_iterations=4, max_candidates=1)})
+    archive.write_task(bumped)
+
+    orchestrator2 = Orchestrator(
+        adapter=_ToyAdapterWithAppendPatch(),
+        backend=_FailingReviewBackend(),
+        archive=archive,
+        policy=ScoringPolicy(policy_id="strict", minimums={"quality": 0.5}),
+    )
+    second = await orchestrator2.resume("t_resume")
+    assert second.accepted is True
+    assert second.run_id == "t_resume"
+    # Resume picks up where iteration 0 left off — the patched IR is the
+    # selected candidate, not a fresh generation from iteration 0.
+    assert second.selected_candidate_id is not None
+    assert second.selected_candidate_id.startswith("cand_t_resume_0000_p")
+
+
+@pytest.mark.asyncio
+async def test_resume_raises_when_no_checkpoint(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    archive.write_task(TaskSpec(task_id="t_no_ckpt", goal="x", modalities=["toy_text"]))
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    with pytest.raises(NoCheckpointError):
+        await orchestrator.resume("t_no_ckpt")

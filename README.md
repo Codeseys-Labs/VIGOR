@@ -61,6 +61,20 @@ combination of adapters and MCP servers from a YAML/JSON config. See
 uv run vigor-agent run --config agent.yaml task.json
 ```
 
+A run that was interrupted mid-iteration leaves an
+`iteration_checkpoint.json` next to the per-candidate JSONs. Resume the
+run from its most recent iteration boundary (no work between iterations
+is re-done):
+
+```bash
+uv run vigor-agent resume --config agent.yaml <run_id>
+```
+
+See `docs/adr/0036-iteration-checkpoint-resume.md` for the rationale.
+Resume starts a fresh wall-clock and cost counter; tighten the
+`Budgets.max_cost_usd` / `max_wall_clock_s` on the archived task before
+resuming if you require an end-to-end ceiling.
+
 A runnable end-to-end example lives in `examples/agent-demo/` — one
 agent.yaml declares all three first-slice adapters (photo, video-manim,
 cad), an echo backend, and one MCP server, and the same CLI dispatches
@@ -107,6 +121,7 @@ uv run pytest
 | Patch loop | shipped |
 | Sequential best-of-N | shipped |
 | Parallel best-of-N | shipped: opt-in via `Budgets.parallel_candidates` (ADR-0034) |
+| Iteration checkpoint + opt-in resume | shipped: `Orchestrator.resume(run_id)` / `vigor-agent resume <run_id>` (ADR-0036) |
 | Photo adapter | shipped: globals, heuristic masks, local rendering, histogram critic, JSON/XMP/mask exports |
 | Video adapter | shipped: standalone Manim adapter with fake-runner tests; real Manim optional |
 | CAD adapter | shipped: OpenSCAD source generation + pure-Python validators |

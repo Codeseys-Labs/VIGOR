@@ -110,5 +110,38 @@ def resolve(
     typer.echo(agent.resolve_adapter(task))
 
 
+@app.command("resume")
+def resume(
+    config: Path = typer.Option(..., "--config", "-c", help="Path to AgentConfig YAML/JSON."),
+    run_id: str = typer.Argument(..., help="run_id of a partial run with an iteration checkpoint."),
+) -> None:
+    """Resume a partial run from its iteration checkpoint (ADR-0036).
+
+    Reads ``runs/<run_id>/iteration_checkpoint.json`` from the configured
+    archive directory, re-resolves the adapter from the archived TaskSpec,
+    builds a fresh backend, and re-enters the run loop at
+    ``checkpoint.next_iteration``. Wall-clock and cost budgets restart
+    from zero on the resumed run; tighten ``Budgets.max_cost_usd`` /
+    ``max_wall_clock_s`` on the archived task before resuming if you
+    require an end-to-end ceiling.
+    """
+
+    cfg = load_agent_config(config)
+    agent = AgentOrchestrator(cfg)
+
+    async def _resume() -> None:
+        try:
+            result = await agent.resume(run_id)
+            typer.echo(
+                f"run_id={result.run_id} accepted={result.accepted} "
+                f"stop_reason={result.stop_reason} "
+                f"selected={result.selected_candidate_id}"
+            )
+        finally:
+            await agent.aclose()
+
+    asyncio.run(_resume())
+
+
 if __name__ == "__main__":
     app()

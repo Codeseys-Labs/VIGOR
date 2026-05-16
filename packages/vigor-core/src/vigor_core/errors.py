@@ -76,3 +76,17 @@ class ArchiveLockedError(VigorError):
 
     kind = "archive_locked"
     retryable = False
+
+
+class NoCheckpointError(VigorError):
+    """No iteration checkpoint exists for the requested ``run_id``.
+
+    See ADR-0036: ``Orchestrator.resume(run_id)`` requires an
+    ``iteration_checkpoint.json`` written by a prior partial run. If the
+    archive directory has no checkpoint (run never started, or crashed
+    before its first iteration boundary), resume cannot proceed and this
+    error is raised.
+    """
+
+    kind = "no_checkpoint"
+    retryable = False

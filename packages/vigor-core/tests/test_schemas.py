@@ -14,6 +14,7 @@ from vigor_core.schemas import (
     Finding,
     Frontier,
     FrontierCandidate,
+    IterationCheckpoint,
     ObservableArtifact,
     PatchPlan,
     ProvenanceActivity,
@@ -214,3 +215,30 @@ def test_provenance_record_accepts_cost_exceeded_stop_reason() -> None:
     )
     _roundtrip(record)
     assert record.stop_reason == "cost_exceeded"
+
+
+def test_iteration_checkpoint_roundtrip() -> None:
+    ckpt = IterationCheckpoint(
+        checkpoint_id="ckpt_run_iter_0001",
+        run_id="run_iter",
+        next_iteration=2,
+        prior_candidate_ids=["cand_run_iter_0000", "cand_run_iter_0001"],
+        current_candidate_id="cand_run_iter_0001",
+        adjudication_ids=["cand_run_iter_0000", "cand_run_iter_0001"],
+        last_candidate_id="cand_run_iter_0001",
+        activities=[
+            ProvenanceActivity(activity_id="generate_x", type="generation"),
+            ProvenanceActivity(activity_id="adjudication_y", type="adjudication"),
+        ],
+    )
+    _roundtrip(ckpt)
+    assert ckpt.schema_version == "vigor.iteration_checkpoint.v1"
+
+
+def test_iteration_checkpoint_rejects_negative_iteration() -> None:
+    with pytest.raises(ValidationError):
+        IterationCheckpoint(
+            checkpoint_id="ckpt_x_0000",
+            run_id="x",
+            next_iteration=-1,
+        )
