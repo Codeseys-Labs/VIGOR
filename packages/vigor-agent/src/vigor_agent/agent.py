@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vigor_core.agent_config import AgentConfig, MCPServerSpec
+from vigor_core.agent_config import AdapterSpec, AgentConfig, MCPServerSpec
 from vigor_core.archive import RunArchive
 from vigor_core.interfaces import AgentBackend, ToolBackend
 from vigor_core.schemas import TaskSpec
 from vigor_runtime.orchestrator import Orchestrator, RunResult
 
 from vigor_agent.factory import FactoryLoadError, call_factory, load_factory
+from vigor_agent.plugin_discovery import (
+    adapter_spec_from_plugin,
+    load_plugin_directory,
+)
 from vigor_agent.registry import AdapterRegistry
 from vigor_agent.router import Router
 
@@ -27,6 +31,16 @@ class AgentOrchestrator:
     calls ``backend.aclose()`` at the end of each run; the
     `AgentOrchestrator` itself owns the longer-lived `ToolBackend` and
     closes it once at agent shutdown.
+
+    Plugin discovery (``plugin_dirs``) loads each Open-Plugin directory
+    and registers its Python ``FactoryRef`` as an additional `AdapterSpec`.
+    Each plugin's ``allowed_prefixes`` (declared inside ``.plugin/vigor.json``)
+    is gated against ``config.allowed_plugin_factory_prefixes`` via
+    :func:`adapter_spec_from_plugin`, preventing a plugin from
+    self-authorising into arbitrary namespaces. Construction fails with
+    ``PluginDiscoveryError`` if any plugin declares an out-of-allowlist
+    prefix — matching the eager-validation posture of ``load_factory``
+    above.
     """
 
     def __init__(
@@ -34,19 +48,52 @@ class AgentOrchestrator:
         config: AgentConfig,
         *,
         tool_backend: ToolBackend | None = None,
+        plugin_dirs: list[tuple[str | Path, str]] | None = None,
     ) -> None:
-        self._config = config
-        self._registry = AdapterRegistry.from_config(config)
-        self._router = Router(config.routing, self._registry)
-        self._archive = RunArchive(Path(config.archive_dir))
+        self._config = (
+            config
+            if not plugin_dirs
+            else config.model_copy(
+                update={
+                    "adapters": list(config.adapters)
+                    + self._load_plugin_adapters(plugin_dirs, config),
+                }
+            )
+        )
+        self._registry = AdapterRegistry.from_config(self._config)
+        self._router = Router(self._config.routing, self._registry)
+        self._archive = RunArchive(Path(self._config.archive_dir))
         self._tool_backend = (
             tool_backend
             if tool_backend is not None
-            else self._build_tool_backend(config.mcp_servers)
+            else self._build_tool_backend(self._config.mcp_servers)
         )
         # validate the backend factory eagerly so misconfigured agents fail at
         # construction time instead of on the first run.
-        load_factory(config.backend.factory)
+        load_factory(self._config.backend.factory)
+
+    @staticmethod
+    def _load_plugin_adapters(
+        plugin_dirs: list[tuple[str | Path, str]],
+        config: AgentConfig,
+    ) -> list[AdapterSpec]:
+        # host_allowed_prefixes=None bypasses the gate (legacy mode); we always
+        # forward the host's list (possibly []) so the gate fires. An empty
+        # list raises with a clear "host has no allowed_plugin_factory_prefixes"
+        # error from assert_factory_ref_allowed — that's the intended posture
+        # when a host opts in to plugins without declaring an allowlist.
+        host_prefixes: list[str] = list(config.allowed_plugin_factory_prefixes)
+        specs: list[AdapterSpec] = []
+        for plugin_dir, adapter_id in plugin_dirs:
+            plugin = load_plugin_directory(plugin_dir)
+            specs.append(
+                adapter_spec_from_plugin(
+                    plugin,
+                    adapter_id=adapter_id,
+                    host_allowed_prefixes=host_prefixes,
+                )
+            )
+        return specs
 
     @staticmethod
     def _build_tool_backend(specs: list[MCPServerSpec]) -> ToolBackend | None:
