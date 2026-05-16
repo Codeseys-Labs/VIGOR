@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from vigor_core.interfaces import (
     RunContext,
     ToolBackend,
 )
+from vigor_core.observability import RuntimeObserver
 from vigor_core.schemas import (
     AdjudicationReport,
     ArtifactIR,
@@ -49,6 +51,11 @@ from vigor_core.scoring import (
 from vigor_core.util import utcnow_iso
 
 from vigor_runtime.budget import RunBudgetTracker
+
+# Orthogonal Python logging seam — independent of the observer Protocol.
+# Library users configure handlers as they would for any library; the
+# deployment-layer vigor-server configures structured JSON output.
+_logger = logging.getLogger("vigor.runtime")
 
 
 @dataclass(slots=True)
@@ -83,6 +90,7 @@ class Orchestrator:
         policy: ScoringPolicy | None = None,
         tools: ToolBackend | None = None,
         tool_capabilities: frozenset[str] | None = None,
+        observer: RuntimeObserver | None = None,
     ) -> None:
         self._adapter = adapter
         self._backend = backend
@@ -96,11 +104,42 @@ class Orchestrator:
         self._tool_capabilities: frozenset[str] = (
             frozenset(tool_capabilities) if tool_capabilities is not None else frozenset()
         )
+        # ADR-0037: opt-in observer Protocol. ``runtime_checkable`` validation
+        # at construction time fails fast on misconfigured observers (object
+        # missing one of the seven lifecycle methods) — a single isinstance
+        # check that is *not* repeated at the per-emission hot path.
+        if observer is not None and not isinstance(observer, RuntimeObserver):
+            raise TypeError(
+                "observer does not satisfy RuntimeObserver Protocol — must "
+                "implement on_run_start, on_iteration_start, on_candidate_start, "
+                "on_candidate_end, on_iteration_end, on_run_end, on_event"
+            )
+        self._observer: RuntimeObserver | None = observer
+
+    def _emit(self, method_name: str, /, *args: object, **kwargs: object) -> None:
+        """Best-effort observer dispatch (ADR-0037 §Decision Outcome).
+
+        Observer bugs must not break runs: every observer call is wrapped
+        in ``try / except Exception`` and logged at WARNING. The fast-path
+        ``is None`` check matches the "zero overhead when no observer"
+        promise — when no observer is attached the method simply returns
+        before any attribute lookup.
+        """
+
+        observer = self._observer
+        if observer is None:
+            return
+        try:
+            getattr(observer, method_name)(*args, **kwargs)
+        except Exception:
+            _logger.warning("RuntimeObserver.%s raised; ignoring", method_name, exc_info=True)
 
     async def run(self, task: TaskSpec) -> RunResult:
         run_id = task.task_id
         started = time.monotonic()
         self._archive.write_task(task)
+        _logger.info("run start run_id=%s task_id=%s", run_id, task.task_id)
+        self._emit("on_run_start", run_id, task)
 
         activities: list[ProvenanceActivity] = []
         adjudications: list[AdjudicationReport] = []
@@ -135,6 +174,9 @@ class Orchestrator:
                     stop_reason = "cost_exceeded"
                     break
 
+                _logger.info("iteration start run_id=%s iteration=%d", run_id, iteration)
+                self._emit("on_iteration_start", run_id, iteration)
+
                 candidates = await self._candidate_batch(task, plan, prior, current_ir, activities)
                 current_ir = None
                 outcomes: list[CandidateOutcome] = []
@@ -144,6 +186,18 @@ class Orchestrator:
                 eval_chunk = min(max(1, task.budgets.parallel_candidates), max(1, len(candidates)))
                 for chunk_start in range(0, len(candidates), eval_chunk):
                     chunk = candidates[chunk_start : chunk_start + eval_chunk]
+                    # ADR-0037 §Negative §1: parallel batches emit one
+                    # ``on_candidate_start`` / ``on_candidate_end`` per
+                    # candidate concurrently. Observers are documented as
+                    # async-safe.
+                    for ir in chunk:
+                        self._emit("on_candidate_start", run_id, iteration, ir.candidate_id)
+                        _logger.debug(
+                            "candidate start run_id=%s iteration=%d candidate_id=%s",
+                            run_id,
+                            iteration,
+                            ir.candidate_id,
+                        )
                     gathered = await asyncio.gather(
                         *(self._evaluate_candidate(ir, context, activities) for ir in chunk),
                         return_exceptions=True,
@@ -154,6 +208,22 @@ class Orchestrator:
                         adjudications.append(outcome.adjudication)
                         prior.append(ir)
                         last_candidate_id = ir.candidate_id
+                        self._emit(
+                            "on_candidate_end",
+                            run_id,
+                            iteration,
+                            ir.candidate_id,
+                            outcome.compile_result,
+                            outcome.reviews,
+                            outcome.adjudication,
+                        )
+                        _logger.debug(
+                            "candidate end run_id=%s iteration=%d candidate_id=%s decision=%s",
+                            run_id,
+                            iteration,
+                            ir.candidate_id,
+                            outcome.adjudication.decision,
+                        )
 
                 accepted_outcome = self._select_accepted_outcome(outcomes)
                 if accepted_outcome is not None:
@@ -164,6 +234,15 @@ class Orchestrator:
                     if export is None:
                         accepted = False
                         stop_reason = "failed"
+                        self._emit(
+                            "on_event",
+                            "export_failed",
+                            {
+                                "run_id": run_id,
+                                "iteration": iteration,
+                                "candidate_id": accepted_outcome.ir.candidate_id,
+                            },
+                        )
                     else:
                         accepted = True
                         last_export = export
@@ -172,6 +251,21 @@ class Orchestrator:
                             ProvenanceActivity(activity_id=export.export_id, type="export")
                         )
                         stop_reason = "accepted"
+                    accepted_id = accepted_outcome.ir.candidate_id if accepted else None
+                    self._emit(
+                        "on_iteration_end",
+                        run_id,
+                        iteration,
+                        len(outcomes),
+                        accepted_id,
+                    )
+                    _logger.info(
+                        "iteration end run_id=%s iteration=%d candidates=%d accepted=%s",
+                        run_id,
+                        iteration,
+                        len(outcomes),
+                        accepted_id,
+                    )
                     break
 
                 patch_source = self._select_patch_source(outcomes)
@@ -180,6 +274,15 @@ class Orchestrator:
                         "escalated"
                         if any(out.adjudication.decision == "escalate" for out in outcomes)
                         else "failed"
+                    )
+                    self._emit("on_iteration_end", run_id, iteration, len(outcomes), None)
+                    _logger.info(
+                        "iteration end run_id=%s iteration=%d candidates=%d "
+                        "no_patchable_candidate stop_reason=%s",
+                        run_id,
+                        iteration,
+                        len(outcomes),
+                        stop_reason,
                     )
                     break
 
@@ -191,6 +294,16 @@ class Orchestrator:
                 self._archive.write_patch(run_id, proposal.patch)
                 activities.append(
                     ProvenanceActivity(activity_id=proposal.patch.patch_id, type="patch")
+                )
+                self._emit(
+                    "on_event",
+                    "patch_applied",
+                    {
+                        "run_id": run_id,
+                        "iteration": iteration,
+                        "patch_id": proposal.patch.patch_id,
+                        "source_candidate_id": patch_source.ir.candidate_id,
+                    },
                 )
 
                 patched_ir = await self._adapter.apply_patch(patch_source.ir, proposal.patch)
@@ -208,8 +321,22 @@ class Orchestrator:
                     )
                     self._archive.write_error(run_id, fatal_error)
                     stop_reason = "failed"
+                    self._emit("on_iteration_end", run_id, iteration, len(outcomes), None)
+                    _logger.info(
+                        "iteration end run_id=%s iteration=%d candidates=%d patched_ir_invalid",
+                        run_id,
+                        iteration,
+                        len(outcomes),
+                    )
                     break
                 current_ir = patched_ir
+                self._emit("on_iteration_end", run_id, iteration, len(outcomes), None)
+                _logger.info(
+                    "iteration end run_id=%s iteration=%d candidates=%d patch_applied continuing",
+                    run_id,
+                    iteration,
+                    len(outcomes),
+                )
             else:
                 stop_reason = "budget_exhausted"
 
@@ -269,6 +396,15 @@ class Orchestrator:
         )
         if last_export is not None and accepted:
             self._archive.write_final(run_id, last_export, provenance)
+
+        _logger.info(
+            "run end run_id=%s accepted=%s stop_reason=%s selected=%s",
+            run_id,
+            accepted,
+            stop_reason,
+            selected_candidate_id,
+        )
+        self._emit("on_run_end", run_id, accepted, stop_reason, selected_candidate_id)
 
         return RunResult(
             run_id=run_id,

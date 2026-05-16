@@ -35,6 +35,7 @@ from vigor_core.interfaces import (
     ToolResult,
     ValidationReport,
 )
+from vigor_core.observability import RuntimeObserver
 from vigor_core.plugin import (
     OpenPluginManifest,
     SkillTemplate,
@@ -138,6 +139,7 @@ __all__ = [
     "RoutingPolicy",
     "RunArchive",
     "RunContext",
+    "RuntimeObserver",
     "SchemaValidationError",
     "ScoringPolicy",
     "SkillTemplate",

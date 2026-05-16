@@ -189,6 +189,74 @@ async def test_agent_aclose_calls_tool_backend_aclose(tmp_path: Path) -> None:
     assert spy.closed == 1
 
 
+@pytest.mark.asyncio
+async def test_agent_threads_observer_into_orchestrator(tmp_path: Path) -> None:
+    """ADR-0037: AgentOrchestrator passes the observer kwarg down to Orchestrator."""
+
+    class _CountingObserver:
+        def __init__(self) -> None:
+            self.run_starts = 0
+            self.run_ends = 0
+            self.events: list[str] = []
+
+        def on_run_start(self, run_id: str, task: TaskSpec) -> None:
+            self.run_starts += 1
+
+        def on_iteration_start(self, run_id: str, iteration: int) -> None:
+            pass
+
+        def on_candidate_start(self, run_id: str, iteration: int, candidate_id: str) -> None:
+            pass
+
+        def on_candidate_end(
+            self,
+            run_id: str,
+            iteration: int,
+            candidate_id: str,
+            compile_result: object,
+            reviews: list[object],
+            adjudication: object,
+        ) -> None:
+            pass
+
+        def on_iteration_end(
+            self,
+            run_id: str,
+            iteration: int,
+            candidate_count: int,
+            accepted_candidate_id: str | None,
+        ) -> None:
+            pass
+
+        def on_run_end(
+            self,
+            run_id: str,
+            accepted: bool,
+            stop_reason: str,
+            selected_candidate_id: str | None,
+        ) -> None:
+            self.run_ends += 1
+
+        def on_event(self, name: str, attributes: dict[str, object]) -> None:
+            self.events.append(name)
+
+    observer = _CountingObserver()
+    cfg = _toy_config(tmp_path / "runs")
+    agent = AgentOrchestrator(cfg, observer=observer)
+    try:
+        task = TaskSpec(
+            task_id="t_observer_threaded",
+            goal="hi",
+            modalities=["toy_text"],
+            budgets=Budgets(max_iterations=1, max_candidates=1),
+        )
+        await agent.run(task)
+        assert observer.run_starts == 1
+        assert observer.run_ends == 1
+    finally:
+        await agent.aclose()
+
+
 def test_load_agent_config_json(tmp_path: Path) -> None:
     cfg_path = tmp_path / "agent.json"
     payload = {

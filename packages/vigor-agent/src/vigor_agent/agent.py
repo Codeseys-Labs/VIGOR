@@ -7,6 +7,7 @@ from pathlib import Path
 from vigor_core.agent_config import AdapterSpec, AgentConfig, MCPServerSpec
 from vigor_core.archive import RunArchive
 from vigor_core.interfaces import AgentBackend, ToolBackend
+from vigor_core.observability import RuntimeObserver
 from vigor_core.schemas import TaskSpec
 from vigor_runtime.orchestrator import Orchestrator, RunResult
 
@@ -49,6 +50,7 @@ class AgentOrchestrator:
         *,
         tool_backend: ToolBackend | None = None,
         plugin_dirs: list[tuple[str | Path, str]] | None = None,
+        observer: RuntimeObserver | None = None,
     ) -> None:
         self._config = (
             config
@@ -68,6 +70,8 @@ class AgentOrchestrator:
             if tool_backend is not None
             else self._build_tool_backend(self._config.mcp_servers)
         )
+        # ADR-0037: optional observer threaded into every per-run Orchestrator.
+        self._observer = observer
         # validate the backend factory eagerly so misconfigured agents fail at
         # construction time instead of on the first run.
         load_factory(self._config.backend.factory)
@@ -134,6 +138,7 @@ class AgentOrchestrator:
             backend=backend,
             archive=self._archive,
             tools=self._tool_backend,
+            observer=self._observer,
         )
         return await orchestrator.run(task)
 
