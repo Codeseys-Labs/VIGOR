@@ -31,6 +31,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import SecretStr
 from vigor_core.interfaces import (
     AgentBackend,
     GenerationRequest,
@@ -56,8 +57,15 @@ _INSTALL_HINT = (
 _DEFAULT_PASS_THROUGH: tuple[str, ...] = ("PATH",)
 
 
-def _build_subprocess_env(spec_env: dict[str, str]) -> dict[str, str]:
+def _build_subprocess_env(spec_env: dict[str, SecretStr] | dict[str, str]) -> dict[str, str]:
     """Build the subprocess environment for the Claude SDK (ADR-0029).
+
+    Accepts either ``dict[str, SecretStr]`` (the canonical shape after
+    VIGOR-dfbd, since :class:`ClaudeBackendConfig` wraps every declared
+    value in :class:`pydantic.SecretStr`) or ``dict[str, str]`` for ergonomics
+    in unit tests that call the helper directly. Each value is unwrapped to
+    cleartext at this boundary because the spawned SDK process needs the
+    real key.
 
     Always returns a concrete dict. Callers must not pass ``None`` to the
     SDK's ``env`` parameter, because that re-enables the SDK's inherit-all
@@ -66,7 +74,9 @@ def _build_subprocess_env(spec_env: dict[str, str]) -> dict[str, str]:
     pass-through key set.
     """
 
-    env: dict[str, str] = dict(spec_env)
+    env: dict[str, str] = {}
+    for key, value in spec_env.items():
+        env[key] = value.get_secret_value() if isinstance(value, SecretStr) else value
     for key in _DEFAULT_PASS_THROUGH:
         parent_value = os.environ.get(key)
         if parent_value is not None:
@@ -76,6 +86,15 @@ def _build_subprocess_env(spec_env: dict[str, str]) -> dict[str, str]:
 
 @dataclass(slots=True)
 class ClaudeBackendConfig:
+    """Configuration for :class:`ClaudeAgentBackend`.
+
+    ``env`` values are stored as :class:`pydantic.SecretStr` so any accidental
+    ``repr()`` / ``str()`` / structured logging of this config redacts vendor
+    credentials (VIGOR-dfbd). Callers may still construct the dataclass with
+    plain strings — :meth:`__post_init__` wraps them transparently. Cleartext
+    is only materialised at the SDK boundary inside :func:`_build_subprocess_env`.
+    """
+
     model: str = "claude-sonnet-4-5"
     max_turns: int = 8
     permission_mode: str = "dontAsk"
@@ -87,8 +106,18 @@ class ClaudeBackendConfig:
         "You are the VIGOR patch planner. Emit 1-5 actionable change objectives."
     )
     cwd: str | None = None
-    env: dict[str, str] = field(default_factory=dict)
+    env: dict[str, SecretStr] = field(default_factory=dict)
     setting_sources: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Coerce plain-string env values to SecretStr so a caller that
+        # constructs ClaudeBackendConfig(env={"K": "v"}) does not silently
+        # bypass the redaction guarantee. Already-wrapped values are passed
+        # through unchanged.
+        coerced: dict[str, SecretStr] = {}
+        for key, value in self.env.items():
+            coerced[key] = value if isinstance(value, SecretStr) else SecretStr(value)
+        self.env = coerced
 
 
 class ClaudeAgentBackend(AgentBackend):

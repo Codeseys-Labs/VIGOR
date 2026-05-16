@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 
 from vigor_core.schemas import (
     ID_PATTERN,
@@ -76,14 +76,25 @@ class MCPServerSpec(_VigorBase):
 
     For ``http`` and ``sse`` transports, ``env`` MUST be empty — those
     transports do not spawn a subprocess.
+
+    Secret redaction (VIGOR-dfbd)
+    -----------------------------
+    Both ``env`` and ``headers`` are typed as ``dict[str, SecretStr]``: every
+    declared value is wrapped so ``__repr__``/``__str__``/``model_dump_json``
+    emit ``"**********"`` instead of the cleartext. Cleartext only escapes
+    via :meth:`pydantic.SecretStr.get_secret_value`, which is the explicit
+    contract used by the transport layer when it materialises the actual
+    subprocess env / HTTP headers. YAML/JSON loaders that pass plain
+    ``str`` values continue to work — Pydantic coerces them at validation
+    time — so this is a transparent change for operators.
     """
 
     server_id: str = Field(pattern=ID_PATTERN)
     transport: Literal["stdio", "http", "sse"]
     command: list[str] | None = None
     url: str | None = None
-    env: dict[str, str] = Field(default_factory=dict)
-    headers: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, SecretStr] = Field(default_factory=dict)
+    headers: dict[str, SecretStr] = Field(default_factory=dict)
     tool_allowlist: list[str] | None = None
     timeout_s: int = Field(default=30, ge=1)
     role_mapping: dict[str, str] = Field(default_factory=dict)

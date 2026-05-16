@@ -28,6 +28,7 @@ import os
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any
 
+from pydantic import SecretStr
 from vigor_core.agent_config import MCPServerSpec
 
 if TYPE_CHECKING:  # pragma: no cover - only for type checkers
@@ -46,12 +47,16 @@ _MIN_STREAMABLEHTTP_TUPLE = 2
 _DEFAULT_PASS_THROUGH: tuple[str, ...] = ("PATH",)
 
 
-def _build_stdio_env(spec_env: dict[str, str] | None) -> dict[str, str]:
+def _build_stdio_env(spec_env: dict[str, SecretStr] | dict[str, str] | None) -> dict[str, str]:
     """Build the subprocess environment for a stdio MCP server (ADR-0029).
 
     The returned dict is the explicit pass-through:
 
     * Every key from ``spec_env`` is copied verbatim (operator-declared).
+      Values may be either :class:`pydantic.SecretStr` (the canonical
+      ``MCPServerSpec.env`` shape post-VIGOR-dfbd) or plain ``str`` for
+      direct unit-test invocation; both are unwrapped to cleartext here
+      because the SDK boundary itself needs the real value.
     * Each key in :data:`_DEFAULT_PASS_THROUGH` is set from the parent
       process via :func:`os.environ.get` — but only if the operator did
       not already pin it, so ``spec.env`` always wins.
@@ -62,12 +67,33 @@ def _build_stdio_env(spec_env: dict[str, str] | None) -> dict[str, str]:
     dict (no spec env, no pass-through key set in parent) is the safe state.
     """
 
-    env: dict[str, str] = dict(spec_env) if spec_env else {}
+    env: dict[str, str] = {}
+    if spec_env:
+        for key, value in spec_env.items():
+            env[key] = value.get_secret_value() if isinstance(value, SecretStr) else value
     for key in _DEFAULT_PASS_THROUGH:
         parent_value = os.environ.get(key)
         if parent_value is not None:
             env.setdefault(key, parent_value)
     return env
+
+
+def _unwrap_headers(
+    spec_headers: dict[str, SecretStr] | dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Materialise ``MCPServerSpec.headers`` for the HTTP/SSE SDK boundary.
+
+    Returns ``None`` when there are no headers so we keep the prior
+    "no Authorization unless declared" wire shape; otherwise unwraps each
+    :class:`SecretStr` to cleartext for the actual HTTP request.
+    """
+
+    if not spec_headers:
+        return None
+    return {
+        key: (value.get_secret_value() if isinstance(value, SecretStr) else value)
+        for key, value in spec_headers.items()
+    }
 
 
 async def open_session(spec: MCPServerSpec, stack: AsyncExitStack) -> ClientSession:
@@ -102,7 +128,7 @@ async def open_session(spec: MCPServerSpec, stack: AsyncExitStack) -> ClientSess
         if spec.env:
             raise ValueError("sse MCPServerSpec must not declare env")
         read, write = await stack.enter_async_context(
-            sse_client(url=spec.url, headers=dict(spec.headers) if spec.headers else None)
+            sse_client(url=spec.url, headers=_unwrap_headers(spec.headers))
         )
     elif spec.transport == "http":
         from mcp.client.streamable_http import streamablehttp_client
@@ -113,7 +139,7 @@ async def open_session(spec: MCPServerSpec, stack: AsyncExitStack) -> ClientSess
             raise ValueError("http MCPServerSpec must not declare env")
         ctx = await stack.enter_async_context(
             streamablehttp_client(
-                url=spec.url, headers=dict(spec.headers) if spec.headers else None
+                url=spec.url, headers=_unwrap_headers(spec.headers)
             )
         )
         # streamablehttp_client returns (read, write, session_callback).

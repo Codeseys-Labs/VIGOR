@@ -15,8 +15,13 @@ from contextlib import AsyncExitStack
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 from vigor_core.agent_config import MCPServerSpec
-from vigor_mcp.transports.sdk import _DEFAULT_PASS_THROUGH, _build_stdio_env
+from vigor_mcp.transports.sdk import (
+    _DEFAULT_PASS_THROUGH,
+    _build_stdio_env,
+    _unwrap_headers,
+)
 
 
 def test_default_pass_through_is_path_only() -> None:
@@ -106,6 +111,44 @@ def test_build_stdio_env_returns_independent_dict() -> None:
 
     env["GEMINI_API_KEY"] = "tampered"
     assert spec_env["GEMINI_API_KEY"] == "k"
+
+
+def test_build_stdio_env_unwraps_secretstr_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``MCPServerSpec.env`` values are :class:`SecretStr` post-VIGOR-dfbd.
+
+    The transport layer is the audited boundary at which cleartext leaves
+    the redaction wrapper, because the stdio subprocess actually needs the
+    real value. This test verifies the unwrap happens here and only here.
+    """
+
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = _build_stdio_env(
+        spec_env={"ANTHROPIC_API_KEY": SecretStr("explicit-cleartext")}
+    )
+
+    assert env["ANTHROPIC_API_KEY"] == "explicit-cleartext"
+
+
+def test_unwrap_headers_returns_none_when_empty() -> None:
+    """No declared headers → preserve the prior None wire shape."""
+
+    assert _unwrap_headers(None) is None
+    assert _unwrap_headers({}) is None
+
+
+def test_unwrap_headers_unwraps_secretstr_values() -> None:
+    headers = _unwrap_headers({"Authorization": SecretStr("Bearer real-token")})
+    assert headers == {"Authorization": "Bearer real-token"}
+
+
+def test_unwrap_headers_tolerates_plain_str_values() -> None:
+    """Existing call sites that pass ``dict[str, str]`` directly continue to work."""
+
+    headers = _unwrap_headers({"X-Trace-Id": "abc123"})
+    assert headers == {"X-Trace-Id": "abc123"}
 
 
 @pytest.mark.asyncio
