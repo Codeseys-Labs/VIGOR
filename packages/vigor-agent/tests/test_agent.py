@@ -18,6 +18,7 @@ from vigor_core.agent_config import (
     FactoryRef,
     RoutingPolicy,
 )
+from vigor_core.errors import NoCheckpointError
 from vigor_core.interfaces import ToolBackend, ToolResult
 from vigor_core.schemas import Budgets, TaskSpec, ToolManifest
 
@@ -67,6 +68,53 @@ async def test_agent_runs_toy_adapter_end_to_end(tmp_path: Path) -> None:
         run_dir = agent.archive.run_dir("t_agent_demo")
         assert (run_dir / "task.json").exists()
         assert (run_dir / "final" / "export_bundle.json").exists()
+    finally:
+        await agent.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agent_resume_replays_archive_through_orchestrator(tmp_path: Path) -> None:
+    """``AgentOrchestrator.resume`` reads the archived task and resumes (ADR-0036).
+
+    A successful first run leaves an iteration checkpoint with
+    ``next_iteration == max_iterations``; resume re-enters past the loop
+    body and falls through to the post-loop frontier write, returning a
+    ``RunResult`` whose ``stop_reason == "budget_exhausted"`` (no
+    iteration ran). This exercises the full read-task → resolve-adapter
+    → fresh-backend → ``Orchestrator.resume`` wiring.
+    """
+
+    cfg = _toy_config(tmp_path / "runs")
+    agent = AgentOrchestrator(cfg)
+    try:
+        task = TaskSpec(
+            task_id="t_agent_resume",
+            goal="hello agent",
+            modalities=["toy_text"],
+            budgets=Budgets(max_iterations=1, max_candidates=1),
+        )
+        first = await agent.run(task)
+        assert first.accepted is True
+        ckpt = agent.archive.read_checkpoint("t_agent_resume")
+        assert ckpt.next_iteration == 1
+
+        second = await agent.resume("t_agent_resume")
+        # Resume on an already-complete checkpoint runs no new iterations
+        # but still produces a frontier + RunResult cleanly.
+        assert second.run_id == "t_agent_resume"
+        assert second.stop_reason == "budget_exhausted"
+    finally:
+        await agent.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agent_resume_raises_when_no_checkpoint(tmp_path: Path) -> None:
+    cfg = _toy_config(tmp_path / "runs")
+    agent = AgentOrchestrator(cfg)
+    try:
+        agent.archive.write_task(TaskSpec(task_id="t_no_ckpt", goal="x", modalities=["toy_text"]))
+        with pytest.raises(NoCheckpointError):
+            await agent.resume("t_no_ckpt")
     finally:
         await agent.aclose()
 

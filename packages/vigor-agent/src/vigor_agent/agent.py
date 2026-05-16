@@ -130,17 +130,35 @@ class AgentOrchestrator:
         return self._router.resolve(task)
 
     async def run(self, task: TaskSpec) -> RunResult:
+        orchestrator = self._build_orchestrator(task)
+        return await orchestrator.run(task)
+
+    async def resume(self, run_id: str) -> RunResult:
+        """Resume a partial run from its iteration checkpoint.
+
+        Per ADR-0036, reads the archived ``TaskSpec`` to re-resolve the
+        adapter, builds a fresh backend (the prior backend's session is
+        unrecoverable across crashes), and delegates to
+        :meth:`Orchestrator.resume`. Raises
+        :class:`vigor_core.errors.NoCheckpointError` if no checkpoint
+        exists for ``run_id``.
+        """
+
+        task = self._archive.read_task(run_id)
+        orchestrator = self._build_orchestrator(task)
+        return await orchestrator.resume(run_id)
+
+    def _build_orchestrator(self, task: TaskSpec) -> Orchestrator:
         adapter_id = self._router.resolve(task)
         adapter = self._registry.get(adapter_id)
         backend = self._build_backend()
-        orchestrator = Orchestrator(
+        return Orchestrator(
             adapter=adapter,
             backend=backend,
             archive=self._archive,
             tools=self._tool_backend,
             observer=self._observer,
         )
-        return await orchestrator.run(task)
 
     def _build_backend(self) -> AgentBackend:
         instance = call_factory(self._config.backend.factory)

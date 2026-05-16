@@ -32,6 +32,7 @@ from vigor_core.schemas import (
     ArtifactIR,
     CompileResult,
     ExportBundle,
+    IterationCheckpoint,
     ObservableArtifact,
     ProvenanceActivity,
     ProvenanceRecord,
@@ -135,15 +136,75 @@ class Orchestrator:
             _logger.warning("RuntimeObserver.%s raised; ignoring", method_name, exc_info=True)
 
     async def run(self, task: TaskSpec) -> RunResult:
+        self._archive.write_task(task)
+        return await self._execute(
+            task=task,
+            start_iteration=0,
+            seed_prior=[],
+            seed_current_ir=None,
+            seed_activities=[],
+            seed_adjudications=[],
+            seed_last_candidate_id=None,
+        )
+
+    async def resume(self, run_id: str) -> RunResult:
+        """Resume a partial run from its most recent iteration checkpoint.
+
+        Per ADR-0036: reads ``runs/<run_id>/iteration_checkpoint.json``,
+        rehydrates ``prior`` IRs from per-candidate archive entries plus
+        ``adjudications`` from each candidate's ``adjudication.json``, and
+        re-enters the loop at ``checkpoint.next_iteration``. Raises
+        :class:`vigor_core.errors.NoCheckpointError` if no checkpoint
+        exists. The resumed run gets a fresh wall-clock and cost counter
+        — operators who care about end-to-end budgets must tighten
+        ``max_cost_usd`` / ``max_wall_clock_s`` on the rehydrated task
+        themselves (ADR-0036 §Negative §3).
+        """
+
+        task = self._archive.read_task(run_id)
+        checkpoint = self._archive.read_checkpoint(run_id)
+        prior = [self._archive.read_ir(run_id, cid) for cid in checkpoint.prior_candidate_ids]
+        current_ir = (
+            self._archive.read_ir(run_id, checkpoint.current_candidate_id)
+            if checkpoint.current_candidate_id is not None
+            else None
+        )
+        adjudications = [
+            self._archive.read_adjudication(run_id, cid) for cid in checkpoint.adjudication_ids
+        ]
+        return await self._execute(
+            task=task,
+            start_iteration=checkpoint.next_iteration,
+            seed_prior=prior,
+            seed_current_ir=current_ir,
+            seed_activities=list(checkpoint.activities),
+            seed_adjudications=adjudications,
+            seed_last_candidate_id=checkpoint.last_candidate_id,
+        )
+
+    async def _execute(
+        self,
+        *,
+        task: TaskSpec,
+        start_iteration: int,
+        seed_prior: list[ArtifactIR],
+        seed_current_ir: ArtifactIR | None,
+        seed_activities: list[ProvenanceActivity],
+        seed_adjudications: list[AdjudicationReport],
+        seed_last_candidate_id: str | None,
+    ) -> RunResult:
         run_id = task.task_id
         started = time.monotonic()
-        self._archive.write_task(task)
+        # ADR-0036 + ADR-0037: write_task moved up to ``run()`` so resume()
+        # does not redundantly persist a task it just read from the archive.
+        # Observer + log emissions are run-scoped and apply equally to
+        # fresh runs and resumed runs.
         _logger.info("run start run_id=%s task_id=%s", run_id, task.task_id)
         self._emit("on_run_start", run_id, task)
 
-        activities: list[ProvenanceActivity] = []
-        adjudications: list[AdjudicationReport] = []
-        last_candidate_id: str | None = None
+        activities: list[ProvenanceActivity] = list(seed_activities)
+        adjudications: list[AdjudicationReport] = list(seed_adjudications)
+        last_candidate_id: str | None = seed_last_candidate_id
         last_export: ExportBundle | None = None
         stop_reason: StopReason = "accepted"
         accepted = False
@@ -162,10 +223,10 @@ class Orchestrator:
                 tool_capabilities=self._tool_capabilities,
             )
             plan = await self._adapter.plan_representation(task)
-            prior: list[ArtifactIR] = []
-            current_ir: ArtifactIR | None = None
+            prior: list[ArtifactIR] = list(seed_prior)
+            current_ir: ArtifactIR | None = seed_current_ir
 
-            for iteration in range(task.budgets.max_iterations):
+            for iteration in range(start_iteration, task.budgets.max_iterations):
                 context.iteration = iteration
                 if time.monotonic() - started > task.budgets.max_wall_clock_s:
                     stop_reason = "budget_exhausted"
@@ -266,6 +327,18 @@ class Orchestrator:
                         len(outcomes),
                         accepted_id,
                     )
+                    # ADR-0036: write checkpoint at iteration boundary even
+                    # on success-break so a crash before the final
+                    # provenance.json still has a recovery point.
+                    self._write_iteration_checkpoint(
+                        run_id=run_id,
+                        next_iteration=iteration + 1,
+                        prior=prior,
+                        current_ir=None,
+                        activities=activities,
+                        adjudications=adjudications,
+                        last_candidate_id=last_candidate_id,
+                    )
                     break
 
                 patch_source = self._select_patch_source(outcomes)
@@ -329,6 +402,13 @@ class Orchestrator:
                         len(outcomes),
                     )
                     break
+                # ADR-0036: persist the patched IR so resume can rehydrate
+                # ``current_ir`` from disk via ``read_ir(run_id, cid)``. Without
+                # this, ``current_candidate_id`` would point at a candidate
+                # whose ir.json doesn't exist until the next iteration's
+                # ``_evaluate_candidate`` writes it — fatal for resume across
+                # the iteration boundary.
+                self._archive.write_ir(run_id, patched_ir)
                 current_ir = patched_ir
                 self._emit("on_iteration_end", run_id, iteration, len(outcomes), None)
                 _logger.info(
@@ -336,6 +416,18 @@ class Orchestrator:
                     run_id,
                     iteration,
                     len(outcomes),
+                )
+                # ADR-0036: end-of-iteration checkpoint after all candidate
+                # JSONs are durable. A crash before the next iteration
+                # starts resumes here with rehydrated prior + current_ir.
+                self._write_iteration_checkpoint(
+                    run_id=run_id,
+                    next_iteration=iteration + 1,
+                    prior=prior,
+                    current_ir=current_ir,
+                    activities=activities,
+                    adjudications=adjudications,
+                    last_candidate_id=last_candidate_id,
                 )
             else:
                 stop_reason = "budget_exhausted"
@@ -415,6 +507,29 @@ class Orchestrator:
             provenance=provenance,
             usage=budget_tracker.latest,
         )
+
+    def _write_iteration_checkpoint(
+        self,
+        *,
+        run_id: str,
+        next_iteration: int,
+        prior: list[ArtifactIR],
+        current_ir: ArtifactIR | None,
+        activities: list[ProvenanceActivity],
+        adjudications: list[AdjudicationReport],
+        last_candidate_id: str | None,
+    ) -> None:
+        checkpoint = IterationCheckpoint(
+            checkpoint_id=f"ckpt_{run_id}_{next_iteration:04d}",
+            run_id=run_id,
+            next_iteration=next_iteration,
+            prior_candidate_ids=[ir.candidate_id for ir in prior],
+            current_candidate_id=(current_ir.candidate_id if current_ir is not None else None),
+            activities=list(activities),
+            adjudication_ids=[adj.candidate_id for adj in adjudications],
+            last_candidate_id=last_candidate_id,
+        )
+        self._archive.write_checkpoint(run_id, checkpoint)
 
     async def _candidate_batch(
         self,

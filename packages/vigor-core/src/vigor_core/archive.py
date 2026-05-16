@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from vigor_core.errors import ArchiveLockedError, SchemaValidationError
+from vigor_core.errors import ArchiveLockedError, NoCheckpointError, SchemaValidationError
 from vigor_core.schemas import (
     AdapterManifest,
     AdjudicationReport,
@@ -21,6 +21,7 @@ from vigor_core.schemas import (
     CompileResult,
     ExportBundle,
     Frontier,
+    IterationCheckpoint,
     PatchPlan,
     ProvenanceRecord,
     ReviewReport,
@@ -276,6 +277,12 @@ class RunArchive:
         path.write_text(_dump(report), encoding="utf-8")
         return path
 
+    def read_adjudication(self, run_id: str, candidate_id: str) -> AdjudicationReport:
+        return _load(
+            self.candidate_dir(run_id, candidate_id) / "adjudication.json",
+            AdjudicationReport,
+        )
+
     def write_patch(self, run_id: str, patch: PatchPlan) -> Path:
         cand = self.candidate_dir(run_id, patch.source_candidate_id)
         cand.mkdir(parents=True, exist_ok=True)
@@ -289,6 +296,57 @@ class RunArchive:
         path = run_dir / "frontier.json"
         path.write_text(_dump(frontier), encoding="utf-8")
         return path
+
+    def write_checkpoint(self, run_id: str, checkpoint: IterationCheckpoint) -> Path:
+        """Persist the latest iteration checkpoint atomically.
+
+        Writes ``runs/<run_id>/iteration_checkpoint.json`` via the
+        write-tmp-then-``os.replace`` pattern from :meth:`_atomic_write`. A
+        crash mid-write leaves either the prior checkpoint or the new one
+        intact, never a partial JSON. See ADR-0036 §Consequence #4.
+        """
+
+        run_dir = self.run_dir(run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        path = run_dir / "iteration_checkpoint.json"
+        self._atomic_write(path, _dump(checkpoint))
+        return path
+
+    def read_checkpoint(self, run_id: str) -> IterationCheckpoint:
+        """Load the latest iteration checkpoint for ``run_id``.
+
+        Raises :class:`vigor_core.errors.NoCheckpointError` if the run
+        directory has no ``iteration_checkpoint.json`` (run never reached
+        an iteration boundary, or the archive is empty). Per ADR-0036,
+        ``Orchestrator.resume`` is opt-in: callers handle this error and
+        decide whether to start over instead.
+        """
+
+        path = self.run_dir(run_id) / "iteration_checkpoint.json"
+        if not path.exists():
+            raise NoCheckpointError(
+                f"no iteration checkpoint at {path}; run never reached an "
+                "iteration boundary or the archive is empty",
+                evidence_uri=str(path),
+            )
+        return _load(path, IterationCheckpoint)
+
+    def _atomic_write(self, path: Path, data: str) -> None:
+        """Write ``data`` to ``path`` via tmp-file + ``os.replace``.
+
+        Per ADR-0036 §Consequence #4, the iteration checkpoint must be
+        atomic: a crash mid-write must not leave a partial file that the
+        resume path would fail to parse. ``os.replace`` is atomic on POSIX
+        and Windows (within the same filesystem), so a reader sees either
+        the previous file or the new one — never a half-written one.
+        VIGOR-c09b will migrate the rest of the archive's writes onto this
+        helper.
+        """
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, path)
 
     def write_final(
         self,

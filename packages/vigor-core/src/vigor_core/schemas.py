@@ -313,3 +313,32 @@ class ProvenanceRecord(_VigorBase):
     derived_artifacts: list[str] = Field(default_factory=list)
     stop_reason: StopReason = "accepted"
     residual_risks: list[str] = Field(default_factory=list)
+
+
+class IterationCheckpoint(_VigorBase):
+    """Iteration-boundary checkpoint enabling :class:`Orchestrator` resume.
+
+    Per ADR-0036, the orchestrator writes one of these at the end of every
+    iteration (success-break or end-of-iteration). Resume reads the latest
+    checkpoint, rehydrates ``prior`` IRs from per-candidate archive entries,
+    and re-enters the loop at ``next_iteration``. The checkpoint stores
+    candidate IDs only; the IRs and adjudications themselves remain in
+    ``runs/<run_id>/candidates/<id>/{ir,adjudication}.json`` so the
+    checkpoint stays small (hundreds of bytes for typical runs).
+    """
+
+    schema_version: Literal["vigor.iteration_checkpoint.v1"] = "vigor.iteration_checkpoint.v1"
+    checkpoint_id: str = Field(pattern=ID_PATTERN)
+    created_at: str = Field(default_factory=utcnow_iso)
+    run_id: str = Field(pattern=ID_PATTERN)
+    next_iteration: int = Field(ge=0)
+    prior_candidate_ids: list[str] = Field(default_factory=list)
+    current_candidate_id: str | None = Field(default=None, pattern=ID_PATTERN)
+    activities: list[ProvenanceActivity] = Field(default_factory=list)
+    # Cumulative adjudication lookup keys. Adjudications are stored on disk
+    # at ``runs/<run_id>/candidates/<candidate_id>/adjudication.json``, so
+    # the candidate_id is the natural lookup key for ``read_adjudication``.
+    # ADR-0036 §Decision Outcome documents this as "adjudications remain in
+    # candidate_dirs"; the checkpoint stores the keys, not the contents.
+    adjudication_ids: list[str] = Field(default_factory=list)
+    last_candidate_id: str | None = Field(default=None, pattern=ID_PATTERN)

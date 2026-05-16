@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from vigor_core.archive import RunArchive
-from vigor_core.errors import ArchiveLockedError
+from vigor_core.errors import ArchiveLockedError, NoCheckpointError
 from vigor_core.schemas import (
     AdapterManifest,
     AdjudicationReport,
@@ -19,8 +19,10 @@ from vigor_core.schemas import (
     ExportBundle,
     Frontier,
     FrontierCandidate,
+    IterationCheckpoint,
     ObservableArtifact,
     PatchPlan,
+    ProvenanceActivity,
     ProvenanceRecord,
     ReviewReport,
     TaskSpec,
@@ -247,6 +249,57 @@ def test_second_process_raises_archive_locked_error(tmp_path: Path) -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def _checkpoint(run_id: str, *, next_iteration: int = 1) -> IterationCheckpoint:
+    return IterationCheckpoint(
+        checkpoint_id=f"ckpt_{run_id}_{next_iteration:04d}",
+        run_id=run_id,
+        next_iteration=next_iteration,
+        prior_candidate_ids=[f"cand_{run_id}_0000"],
+        adjudication_ids=[f"cand_{run_id}_0000"],
+        last_candidate_id=f"cand_{run_id}_0000",
+        activities=[ProvenanceActivity(activity_id="generate_x", type="generation")],
+    )
+
+
+def test_write_and_read_checkpoint_roundtrip(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    try:
+        archive.write_task(_demo_task())
+        ckpt = _checkpoint("run_001")
+        path = archive.write_checkpoint("run_001", ckpt)
+        assert path == archive.run_dir("run_001") / "iteration_checkpoint.json"
+        loaded = archive.read_checkpoint("run_001")
+        assert loaded.checkpoint_id == ckpt.checkpoint_id
+        assert loaded.next_iteration == 1
+        assert loaded.prior_candidate_ids == ckpt.prior_candidate_ids
+    finally:
+        archive.close()
+
+
+def test_read_checkpoint_raises_when_absent(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    try:
+        archive.write_task(_demo_task())
+        with pytest.raises(NoCheckpointError):
+            archive.read_checkpoint("run_001")
+    finally:
+        archive.close()
+
+
+def test_write_checkpoint_overwrites_via_atomic_rename(tmp_path: Path) -> None:
+    archive = RunArchive(tmp_path)
+    try:
+        archive.write_task(_demo_task())
+        archive.write_checkpoint("run_001", _checkpoint("run_001", next_iteration=1))
+        archive.write_checkpoint("run_001", _checkpoint("run_001", next_iteration=2))
+        loaded = archive.read_checkpoint("run_001")
+        assert loaded.next_iteration == 2
+        # Atomic write must clean up its tmp file via os.replace.
+        assert not (archive.run_dir("run_001") / "iteration_checkpoint.json.tmp").exists()
+    finally:
+        archive.close()
 
 
 def test_lock_released_after_close_allows_reopen_from_other_process(tmp_path: Path) -> None:
