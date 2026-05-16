@@ -10,6 +10,7 @@ import pytest
 from vigor_agent.agent import AgentOrchestrator
 from vigor_agent.config_loader import load_agent_config
 from vigor_agent.factory import FactoryLoadError
+from vigor_agent.plugin_discovery import PluginDiscoveryError
 from vigor_core.agent_config import (
     AdapterSpec,
     AgentConfig,
@@ -216,3 +217,78 @@ def test_load_agent_config_json(tmp_path: Path) -> None:
     cfg_path.write_text(json.dumps(payload), encoding="utf-8")
     cfg = load_agent_config(cfg_path)
     assert cfg.agent_id == "agent_json"
+
+
+def _write_plugin_dir(
+    root: Path,
+    *,
+    factory: dict[str, object],
+    name: str = "vigor-adapter-test",
+) -> Path:
+    plugin_dir = root / ".plugin"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+    (plugin_dir / "vigor.json").write_text(json.dumps(factory), encoding="utf-8")
+    return root
+
+
+def test_agent_orchestrator_rejects_plugin_outside_host_allowlist(tmp_path: Path) -> None:
+    """A plugin self-declaring `evil` allowed_prefixes must be rejected at construction."""
+
+    plugin_root = _write_plugin_dir(
+        tmp_path / "plugin",
+        factory={
+            "factory": "evil.module:EvilAdapter",
+            "allowedPrefixes": ["evil"],
+        },
+    )
+    cfg = _toy_config(
+        tmp_path / "runs",
+        allowed_plugin_factory_prefixes=["vigor_runtime"],
+    )
+    with pytest.raises(PluginDiscoveryError, match="plugin-supplied prefix 'evil'"):
+        AgentOrchestrator(cfg, plugin_dirs=[(plugin_root, "adapter_evil")])
+
+
+def test_agent_orchestrator_rejects_plugin_when_host_allowlist_empty(tmp_path: Path) -> None:
+    """allowed_plugin_factory_prefixes default ([]) means 'no plugins'."""
+
+    plugin_root = _write_plugin_dir(
+        tmp_path / "plugin",
+        factory={
+            "factory": "vigor_runtime.toy_adapter:ToyTextAdapter",
+            "allowedPrefixes": ["vigor_runtime"],
+        },
+    )
+    cfg = _toy_config(tmp_path / "runs")
+    assert cfg.allowed_plugin_factory_prefixes == []
+    with pytest.raises(PluginDiscoveryError, match="host has no allowed_plugin_factory_prefixes"):
+        AgentOrchestrator(cfg, plugin_dirs=[(plugin_root, "adapter_x")])
+
+
+@pytest.mark.asyncio
+async def test_agent_orchestrator_admits_plugin_within_host_allowlist(tmp_path: Path) -> None:
+    """A plugin whose allowed_prefixes is contained in the host's list is registered."""
+
+    plugin_root = _write_plugin_dir(
+        tmp_path / "plugin",
+        factory={
+            "factory": "vigor_runtime.toy_adapter:ToyTextAdapter",
+            "allowedPrefixes": ["vigor_runtime"],
+        },
+    )
+    cfg = _toy_config(
+        tmp_path / "runs",
+        allowed_plugin_factory_prefixes=["vigor_runtime"],
+        routing=RoutingPolicy(strategy="modality_match"),
+    )
+    agent = AgentOrchestrator(
+        cfg,
+        plugin_dirs=[(plugin_root, "adapter_plugin")],
+    )
+    try:
+        adapter_ids = agent.registry.adapter_ids()
+        assert "adapter_plugin" in adapter_ids
+        assert "adapter_toy" in adapter_ids
+    finally:
+        await agent.aclose()
