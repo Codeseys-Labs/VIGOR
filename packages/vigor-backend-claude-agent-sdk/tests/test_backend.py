@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -13,13 +14,26 @@ from vigor_core.interfaces import GenerationRequest, RepresentationPlan
 from vigor_core.schemas import TaskSpec
 
 
+@pytest.fixture
+def claude_sdk_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force ``import claude_agent_sdk`` to raise ImportError.
+
+    Setting ``sys.modules[name] = None`` makes Python's import machinery
+    raise ImportError on the next ``import name``, even when the package
+    is installed on disk. Lets us exercise the lazy-import fallback path
+    in environments where the optional SDK is present (e.g.
+    ``uv sync --all-extras`` in CI).
+    """
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
+
+
 def test_backend_instantiates_without_sdk() -> None:
     backend = ClaudeAgentBackend(ClaudeBackendConfig())
     assert isinstance(backend, ClaudeAgentBackend)
 
 
 @pytest.mark.asyncio
-async def test_generate_raises_without_sdk() -> None:
+async def test_generate_raises_without_sdk(claude_sdk_absent: None) -> None:
     backend = ClaudeAgentBackend(ClaudeBackendConfig())
     task = TaskSpec(task_id="t", goal="g", modalities=["toy"])
     plan = RepresentationPlan(ir_type="toy.v1")
