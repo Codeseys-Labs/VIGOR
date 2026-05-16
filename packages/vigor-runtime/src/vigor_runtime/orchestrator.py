@@ -136,16 +136,22 @@ class Orchestrator:
             _logger.warning("RuntimeObserver.%s raised; ignoring", method_name, exc_info=True)
 
     async def run(self, task: TaskSpec) -> RunResult:
-        self._archive.write_task(task)
-        return await self._execute(
-            task=task,
-            start_iteration=0,
-            seed_prior=[],
-            seed_current_ir=None,
-            seed_activities=[],
-            seed_adjudications=[],
-            seed_last_candidate_id=None,
-        )
+        # ADR-0035 §Negative #1 / VIGOR-c2ec: claim the archive root before
+        # any I/O so a concurrent in-process re-entry raises ArchiveBusyError
+        # immediately rather than racing on write_task / write_checkpoint.
+        # The OS advisory lock (mx-7ce41e) refcounts same-process
+        # constructions and so cannot detect this case on its own.
+        with self._archive.claim_active_run():
+            self._archive.write_task(task)
+            return await self._execute(
+                task=task,
+                start_iteration=0,
+                seed_prior=[],
+                seed_current_ir=None,
+                seed_activities=[],
+                seed_adjudications=[],
+                seed_last_candidate_id=None,
+            )
 
     async def resume(self, run_id: str) -> RunResult:
         """Resume a partial run from its most recent iteration checkpoint.
@@ -161,26 +167,30 @@ class Orchestrator:
         themselves (ADR-0036 §Negative §3).
         """
 
-        task = self._archive.read_task(run_id)
-        checkpoint = self._archive.read_checkpoint(run_id)
-        prior = [self._archive.read_ir(run_id, cid) for cid in checkpoint.prior_candidate_ids]
-        current_ir = (
-            self._archive.read_ir(run_id, checkpoint.current_candidate_id)
-            if checkpoint.current_candidate_id is not None
-            else None
-        )
-        adjudications = [
-            self._archive.read_adjudication(run_id, cid) for cid in checkpoint.adjudication_ids
-        ]
-        return await self._execute(
-            task=task,
-            start_iteration=checkpoint.next_iteration,
-            seed_prior=prior,
-            seed_current_ir=current_ir,
-            seed_activities=list(checkpoint.activities),
-            seed_adjudications=adjudications,
-            seed_last_candidate_id=checkpoint.last_candidate_id,
-        )
+        # ADR-0035 §Negative #1 / VIGOR-c2ec: same guardrail as run() —
+        # claim before read_task / read_checkpoint so a concurrent resume
+        # on the same archive fails fast.
+        with self._archive.claim_active_run():
+            task = self._archive.read_task(run_id)
+            checkpoint = self._archive.read_checkpoint(run_id)
+            prior = [self._archive.read_ir(run_id, cid) for cid in checkpoint.prior_candidate_ids]
+            current_ir = (
+                self._archive.read_ir(run_id, checkpoint.current_candidate_id)
+                if checkpoint.current_candidate_id is not None
+                else None
+            )
+            adjudications = [
+                self._archive.read_adjudication(run_id, cid) for cid in checkpoint.adjudication_ids
+            ]
+            return await self._execute(
+                task=task,
+                start_iteration=checkpoint.next_iteration,
+                seed_prior=prior,
+                seed_current_ir=current_ir,
+                seed_activities=list(checkpoint.activities),
+                seed_adjudications=adjudications,
+                seed_last_candidate_id=checkpoint.last_candidate_id,
+            )
 
     async def _execute(
         self,
