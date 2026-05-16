@@ -12,7 +12,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 from vigor_core.archive import RunArchive
-from vigor_core.errors import NoCheckpointError, VigorError
+from vigor_core.errors import (
+    ArchiveBusyError,
+    ArchiveLockedError,
+    NoCheckpointError,
+    VigorError,
+)
 from vigor_core.interfaces import (
     AgentBackend,
     GenerationRequest,
@@ -1110,3 +1115,194 @@ async def test_resume_raises_when_no_checkpoint(tmp_path: Path) -> None:
     )
     with pytest.raises(NoCheckpointError):
         await orchestrator.resume("t_no_ckpt")
+
+
+# ---------------------------------------------------------------------------
+# ADR-0035 §Negative #1 in-process guardrail (VIGOR-c2ec)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_runs_same_archive_raises_busy(tmp_path: Path) -> None:
+    """Two concurrent ``Orchestrator.run`` calls on one archive raise busy.
+
+    The canonical caller mistake: gather two ``run()`` coroutines on the
+    same archive. The synchronous ``claim_active_run`` check on the second
+    runner fires as soon as the first runner yields at its first ``await``.
+    At least one ``ArchiveBusyError`` is observed; the other call may
+    succeed or fail, but the archive must not be corrupted (task.json must
+    parse and match one of the two task_ids).
+    """
+
+    archive = RunArchive(tmp_path)
+    orch_a = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    orch_b = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    task_a = TaskSpec(
+        task_id="t_busy_a",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    task_b = TaskSpec(
+        task_id="t_busy_b",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+
+    results = await asyncio.gather(
+        orch_a.run(task_a),
+        orch_b.run(task_b),
+        return_exceptions=True,
+    )
+
+    busy_errors = [r for r in results if isinstance(r, ArchiveBusyError)]
+    assert len(busy_errors) >= 1, results
+    # No archive corruption: each task.json that *was* written parses
+    # cleanly through TaskSpec and matches the originating task_id
+    # (write_task is the orchestrator's first archive I/O after the claim,
+    # so the loser of the race never reaches it).
+    for task_id in ("t_busy_a", "t_busy_b"):
+        task_path = archive.run_dir(task_id) / "task.json"
+        if task_path.exists():
+            roundtrip = TaskSpec.model_validate_json(task_path.read_text())
+            assert roundtrip.task_id == task_id
+
+
+@pytest.mark.asyncio
+async def test_sequential_runs_same_archive_succeed(tmp_path: Path) -> None:
+    """Two sequential runs on the same archive both succeed.
+
+    The marker must release between calls — otherwise the second run would
+    raise ``ArchiveBusyError``. This is the regression test for a leaked
+    marker that would brick the archive for the rest of the process.
+    """
+
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    task1 = TaskSpec(
+        task_id="t_seq_one",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    task2 = TaskSpec(
+        task_id="t_seq_two",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    first = await orchestrator.run(task1)
+    # Construct a fresh backend for the second run because EchoAgentBackend
+    # closes itself in the orchestrator's finally (aclose). Adapter and
+    # archive are reusable.
+    orchestrator2 = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    second = await orchestrator2.run(task2)
+    assert first.accepted is True
+    assert second.accepted is True
+
+
+@pytest.mark.asyncio
+async def test_export_during_run_still_works(tmp_path: Path) -> None:
+    """A transient ``RunArchive`` constructed mid-run does not raise busy.
+
+    Adapter ``export()`` paths legitimately build
+    ``RunArchive(run_dir.parent)`` to write export-bundle artifacts
+    (mx-7ce41e + mx-514b28). The new guard is at ``Orchestrator.run``,
+    not at ``RunArchive.__init__``, so transient-archive construction
+    on the same root must continue to work even while a run is in flight.
+    We simulate the export-time construction by building a second
+    ``RunArchive(tmp_path)`` directly mid-claim.
+    """
+
+    archive = RunArchive(tmp_path)
+    with archive.claim_active_run():
+        # The OS lock refcount allows same-process re-construction; the
+        # active-runs registry must NOT block this transient archive.
+        transient = RunArchive(tmp_path)
+        try:
+            assert transient.root.resolve() == archive.root.resolve()
+        finally:
+            transient.close()
+
+
+class _PlanFailingAdapter(ToyTextAdapter):
+    async def plan_representation(self, task: TaskSpec):  # type: ignore[no-untyped-def]
+        raise VigorError("plan boom", kind="adapter_contract")
+
+
+@pytest.mark.asyncio
+async def test_run_releases_marker_on_failure(tmp_path: Path) -> None:
+    """A failed run must release the active-runs marker.
+
+    If the marker leaks on the exception path, the second
+    ``orchestrator.run`` raises ``ArchiveBusyError`` even though the first
+    is no longer in flight. Inducing the failure inside ``_execute``
+    (``plan_representation`` raising ``VigorError``) is the most realistic
+    leakage probe — the orchestrator's existing ``except VigorError`` path
+    converts it into a ``stop_reason='failed'`` result rather than a raise,
+    so we don't need ``pytest.raises`` here, just to assert that a
+    follow-up run is not blocked.
+    """
+
+    archive = RunArchive(tmp_path)
+    failing = Orchestrator(
+        adapter=_PlanFailingAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    bad_task = TaskSpec(
+        task_id="t_fail_release",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    failed = await failing.run(bad_task)
+    assert failed.accepted is False
+    assert failed.stop_reason == "failed"
+
+    # Marker must have been released — a second run on the same archive
+    # succeeds without raising ArchiveBusyError.
+    healthy = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=EchoAgentBackend(seed_ir_factory=_seed_with_goal),
+        archive=archive,
+    )
+    good_task = TaskSpec(
+        task_id="t_fail_release_then_ok",
+        goal="hello",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=1),
+    )
+    result = await healthy.run(good_task)
+    assert result.accepted is True
+
+
+def test_busy_error_distinct_from_archive_locked_error() -> None:
+    """ArchiveBusyError is a sibling of ArchiveLockedError, not a subclass.
+
+    Catch-by-type semantics matter: callers wrapping cross-process retry
+    around ``ArchiveLockedError`` must NOT swallow the in-process busy
+    error (which signals a code bug, not a transient peer-process state).
+    """
+
+    assert not issubclass(ArchiveBusyError, ArchiveLockedError)
+    assert not issubclass(ArchiveLockedError, ArchiveBusyError)
+    assert ArchiveBusyError.kind == "archive_busy"
+    assert ArchiveBusyError.retryable is False

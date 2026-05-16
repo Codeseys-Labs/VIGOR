@@ -78,6 +78,31 @@ class ArchiveLockedError(VigorError):
     retryable = False
 
 
+class ArchiveBusyError(VigorError):
+    """Two ``Orchestrator.run`` / ``Orchestrator.resume`` calls overlap on
+    the same archive root *within the same process*.
+
+    Distinct from :class:`ArchiveLockedError`:
+
+    - ``ArchiveLockedError`` — a *different process* holds the OS advisory
+      lock on ``<archive>/.archive.lock`` (ADR-0035 / mx-7ce41e).
+    - ``ArchiveBusyError`` — the same process already has an in-flight
+      orchestrator run on this archive (ADR-0035 §Negative #1 / VIGOR-c2ec).
+
+    Sibling, not subclass: ``except ArchiveLockedError`` MUST NOT swallow a
+    busy error, because retry strategies for the two are different (busy
+    requires the caller to fix their code; locked may resolve when the peer
+    process exits). The guard lives at ``Orchestrator.run`` /
+    ``Orchestrator.resume``, not at ``RunArchive.__init__``: adapter
+    ``export()`` paths legitimately construct transient ``RunArchive``
+    instances under the same OS lock (mx-514b28) and must continue to work
+    during an active run.
+    """
+
+    kind = "archive_busy"
+    retryable = False
+
+
 class NoCheckpointError(VigorError):
     """No iteration checkpoint exists for the requested ``run_id``.
 

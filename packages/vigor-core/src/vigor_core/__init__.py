@@ -18,6 +18,7 @@ from vigor_core.audit import (
 )
 from vigor_core.errors import (
     AdapterContractError,
+    ArchiveBusyError,
     ArchiveLockedError,
     BudgetExceededError,
     CompileError,
@@ -112,6 +113,7 @@ __all__ = [
     "AdjudicationReport",
     "AgentBackend",
     "AgentConfig",
+    "ArchiveBusyError",
     "ArchiveLockedError",
     "ArtifactIR",
     "AuditEvent",

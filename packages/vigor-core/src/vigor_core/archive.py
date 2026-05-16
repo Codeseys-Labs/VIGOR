@@ -8,12 +8,18 @@ import os
 import sys
 import threading
 import weakref
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from vigor_core.errors import ArchiveLockedError, NoCheckpointError, SchemaValidationError
+from vigor_core.errors import (
+    ArchiveBusyError,
+    ArchiveLockedError,
+    NoCheckpointError,
+    SchemaValidationError,
+)
 from vigor_core.schemas import (
     AdapterManifest,
     AdjudicationReport,
@@ -169,6 +175,50 @@ class _LockRegistry:
 _REGISTRY = _LockRegistry()
 
 
+class _ActiveRunRegistry:
+    """Process-local set of archive roots currently driving an orchestrator run.
+
+    Layered on top of :class:`_LockRegistry` (which holds the OS advisory
+    lock and refcounts for legitimate same-process re-entry such as adapter
+    ``export()`` paths). This registry detects the *different* failure
+    mode that ADR-0035 §Negative #1 names: two ``Orchestrator.run`` /
+    ``Orchestrator.resume`` calls on the same archive root within one
+    process. Such calls would interleave ``write_task`` / ``read_task`` /
+    ``write_checkpoint`` against the same files and corrupt the archive.
+
+    A ``threading.Lock``-protected dict keyed on the resolved archive
+    root makes :meth:`claim` an atomic check-and-insert under any of:
+    multiple coroutines on one event loop, multiple event loops in one
+    interpreter, or multiple OS threads. The asyncio-only common case
+    works transparently because the lock is uncontended within a single
+    event loop tick.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: set[str] = set()
+
+    def claim(self, root: Path) -> str:
+        key = str(root.resolve())
+        with self._lock:
+            if key in self._active:
+                raise ArchiveBusyError(
+                    f"another orchestrator run is already in flight on archive {key}; "
+                    "concurrent in-process runs on the same archive are not supported "
+                    "(ADR-0035 §Negative #1, VIGOR-c2ec)",
+                    evidence_uri=key,
+                )
+            self._active.add(key)
+            return key
+
+    def release(self, key: str) -> None:
+        with self._lock:
+            self._active.discard(key)
+
+
+_ACTIVE_RUNS = _ActiveRunRegistry()
+
+
 class RunArchive:
     """Persist every record the orchestrator produces.
 
@@ -208,6 +258,31 @@ class RunArchive:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+    @contextlib.contextmanager
+    def claim_active_run(self) -> Iterator[None]:
+        """Mark this archive root as having an in-flight orchestrator run.
+
+        Used by ``Orchestrator.run`` / ``Orchestrator.resume`` to fail fast
+        when a caller attempts a second concurrent run on the same archive
+        from the same process (ADR-0035 §Negative #1, VIGOR-c2ec).
+
+        This is independent of the OS advisory lock that :class:`RunArchive`
+        already holds. The OS lock is process-scoped (and refcounted within
+        a process so adapter ``export()`` can construct a transient
+        ``RunArchive``); the active-runs registry is run-scoped within a
+        process and exists precisely to catch the case the OS lock cannot.
+
+        Releases on every exit (success or exception). Raises
+        :class:`vigor_core.errors.ArchiveBusyError` immediately on entry if
+        another claim is already outstanding.
+        """
+
+        key = _ACTIVE_RUNS.claim(self.root)
+        try:
+            yield
+        finally:
+            _ACTIVE_RUNS.release(key)
 
     def run_dir(self, run_id: str) -> Path:
         return self._safe_target(run_id)
