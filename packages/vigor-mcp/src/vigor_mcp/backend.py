@@ -11,15 +11,20 @@ one close at agent shutdown) to amortize subprocess / handshake costs.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from typing import Any, Protocol
 
 from vigor_core.agent_config import MCPServerSpec
+from vigor_core.audit import AuditEvent, AuditOutcome, AuditSink
 from vigor_core.interfaces import ToolBackend, ToolResult
 from vigor_core.schemas import ToolManifest
+from vigor_core.util import sha256_text, stable_json
 
 from vigor_mcp.manifest import mcp_tool_to_manifest
+
+EventIdFactory = Callable[[], str]
 
 
 class MCPBackendError(RuntimeError):
@@ -114,6 +119,11 @@ class MCPToolBackend(ToolBackend):
         specs: list[MCPServerSpec],
         *,
         session_opener: SessionOpener | None = None,
+        audit_sink: AuditSink | None = None,
+        actor: str | None = None,
+        run_id: str | None = None,
+        tenant_id: str | None = None,
+        event_id_factory: EventIdFactory | None = None,
     ) -> None:
         if session_opener is None:
             from vigor_mcp.transports.sdk import open_session
@@ -123,6 +133,13 @@ class MCPToolBackend(ToolBackend):
         self._handles: dict[str, _ServerHandle] = {
             spec.server_id: _ServerHandle(spec) for spec in specs
         }
+        self._audit_sink = audit_sink
+        self._actor = actor
+        self._run_id = run_id
+        self._tenant_id = tenant_id
+        self._event_id_factory: EventIdFactory = (
+            event_id_factory if event_id_factory is not None else _default_event_id
+        )
 
     @classmethod
     def from_specs(cls, specs: list[MCPServerSpec]) -> MCPToolBackend:
@@ -145,6 +162,7 @@ class MCPToolBackend(ToolBackend):
         handle = self._handles.get(server_id)
         gate = await self._gate_call(handle, tool_id, server_id, tool_name, capabilities)
         if gate is not None:
+            await self._emit_audit(tool_id, payload, "denied")
             return gate
         assert handle is not None
         try:
@@ -160,14 +178,48 @@ class MCPToolBackend(ToolBackend):
                 )
             except TimeoutError:
                 await handle.aclose()
+                await self._emit_audit(tool_id, payload, "timeout")
                 return ToolResult(
                     tool_id=tool_id,
                     status="timeout",
                     error=f"timed out after {handle.spec.timeout_s}s",
                 )
         except (MCPBackendError, RuntimeError, OSError) as exc:
+            await self._emit_audit(tool_id, payload, "failure")
             return ToolResult(tool_id=tool_id, status="failure", error=str(exc))
-        return self._wrap_result(tool_id, result)
+        wrapped = self._wrap_result(tool_id, result)
+        await self._emit_audit(tool_id, payload, wrapped.status)
+        return wrapped
+
+    async def _emit_audit(
+        self,
+        tool_id: str,
+        payload: dict[str, Any],
+        outcome: str,
+    ) -> None:
+        """Write one ``vigor.audit_event.v1`` record at the call boundary.
+
+        No-op when no ``audit_sink`` is configured. Sink exceptions
+        propagate (fail-closed): an unrecorded tool call must not appear
+        to succeed, since the audit chain is the integrity record.
+        """
+
+        if self._audit_sink is None:
+            return
+        if self._actor is None or self._run_id is None:
+            raise ValueError(
+                "MCPToolBackend.audit_sink requires actor and run_id at construction"
+            )
+        event = AuditEvent(
+            event_id=self._event_id_factory(),
+            tenant_id=self._tenant_id,
+            run_id=self._run_id,
+            actor=self._actor,
+            tool_id=tool_id,
+            payload_sha256=sha256_text(stable_json(payload)),
+            outcome=_coerce_outcome(outcome),
+        )
+        await self._audit_sink.emit(event)
 
     async def aclose(self) -> None:
         for handle in self._handles.values():
@@ -256,3 +308,15 @@ def _extract_error(content: Any) -> str | None:
         if isinstance(text, str):
             return text
     return None
+
+
+def _default_event_id() -> str:
+    return f"evt_{uuid.uuid4().hex}"
+
+
+def _coerce_outcome(status: str) -> AuditOutcome:
+    """Map a ToolResult status (or 'denied') onto the AuditOutcome literal."""
+
+    if status in ("success", "failure", "timeout", "denied"):
+        return status  # type: ignore[return-value]
+    return "failure"

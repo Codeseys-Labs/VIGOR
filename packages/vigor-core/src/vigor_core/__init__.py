@@ -9,6 +9,13 @@ from vigor_core.agent_config import (
     RoutingPolicy,
 )
 from vigor_core.archive import RunArchive
+from vigor_core.audit import (
+    AuditEvent,
+    AuditOutcome,
+    AuditSink,
+    InMemoryAuditSink,
+    NullAuditSink,
+)
 from vigor_core.errors import (
     AdapterContractError,
     ArchiveLockedError,
@@ -104,6 +111,9 @@ __all__ = [
     "AgentConfig",
     "ArchiveLockedError",
     "ArtifactIR",
+    "AuditEvent",
+    "AuditOutcome",
+    "AuditSink",
     "BackendSpec",
     "BudgetExceededError",
     "Budgets",
@@ -121,7 +131,9 @@ __all__ = [
     "FrontierCandidate",
     "GenerationRequest",
     "GenerationResult",
+    "InMemoryAuditSink",
     "MCPServerSpec",
+    "NullAuditSink",
     "ObservableArtifact",
     "OpenPluginManifest",
     "PatchPlan",
