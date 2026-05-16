@@ -53,4 +53,4 @@ jobs:
         run: uv run mypy
 
       - name: Pytest
-        run: uv run pytest --cov=vigor_core --cov=vigor_runtime --cov-report=term-missing
+        run: uv run pytest --cov=vigor_core --cov=vigor_runtime --cov=vigor_adapter_doc --cov-report=term-missing

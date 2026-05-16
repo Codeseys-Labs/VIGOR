@@ -1,0 +1,9 @@
+{
+  "name": "vigor-adapter-doc",
+  "version": "0.1.0",
+  "description": "VIGOR structured-documents domain adapter (Open Plugin Spec v1).",
+  "homepage": "https://github.com/codeseys-labs/vigor",
+  "license": "MIT",
+  "keywords": ["vigor", "documents", "latex", "markdown", "pandoc"],
+  "skills": "./skills/"
+}

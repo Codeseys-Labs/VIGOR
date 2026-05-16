@@ -35,6 +35,7 @@ vigor-backend-claude-agent-sdk = { workspace = true }
 vigor-adapter-photo = { workspace = true }
 vigor-adapter-video-manim = { workspace = true }
 vigor-adapter-cad = { workspace = true }
+vigor-adapter-doc = { workspace = true }
 vigor-harness = { workspace = true }
 vigor-agent = { workspace = true }
 vigor-mcp = { workspace = true }
@@ -73,6 +74,7 @@ mypy_path = [
   "packages/vigor-adapter-photo/src",
   "packages/vigor-adapter-video-manim/src",
   "packages/vigor-adapter-cad/src",
+  "packages/vigor-adapter-doc/src",
   "packages/vigor-harness/src",
   "packages/vigor-agent/src",
   "packages/vigor-mcp/src",
@@ -85,6 +87,7 @@ packages = [
   "vigor_adapter_photo",
   "vigor_adapter_video_manim",
   "vigor_adapter_cad",
+  "vigor_adapter_doc",
   "vigor_harness",
   "vigor_agent",
   "vigor_mcp",

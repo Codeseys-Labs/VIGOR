@@ -45,6 +45,7 @@ packages/
   vigor-adapter-photo/               # photo editing adapter with masks + XMP export
   vigor-adapter-video-manim/         # standalone Manim video adapter
   vigor-adapter-cad/                 # OpenSCAD first-slice CAD adapter
+  vigor-adapter-doc/                 # structured documents (LaTeX + Markdown -> PDF) [skeleton]
   vigor-harness/                     # Meta-Harness-style evaluator
 examples/
   echo-toy-demo/                     # smallest runnable demo
