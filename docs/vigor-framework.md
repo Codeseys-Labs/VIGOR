@@ -119,6 +119,8 @@ Reviewers return structured `ReviewReport` records. The adjudicator applies hard
 
 The runtime evaluates up to `TaskSpec.budgets.max_candidates` candidates in a wave. Only candidates whose adjudication `decision == "accept"` are selectable in the final frontier. Patch/branch/pivot candidates may be kept as evidence but cannot become `selected`.
 
+`Budgets.parallel_candidates` (default `1`) caps fanout within a wave. Higher caps run candidate generation and evaluation under chunked `asyncio.gather` (chunks of `min(parallel_candidates, max_candidates)`), trading one batch's worth of bounded budget overshoot for a 2–4× wall-clock improvement on canonical configurations. Candidate IDs remain stable (`cand_<task>_<NNNN>` indexed before fanout); on-disk write order under `runs/<run_id>/candidates/` becomes nondeterministic. See [ADR-0034](adr/0034-parallel-best-of-n-via-asyncio-gather.md).
+
 ## Safety And Governance
 
 1. Generated executable code (for example Manim scene Python) is untrusted. The default Manim adapter refuses real subprocess execution unless explicitly configured or a sandboxed runner is injected.
