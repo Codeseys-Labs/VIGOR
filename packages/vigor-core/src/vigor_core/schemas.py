@@ -56,6 +56,7 @@ class Budgets(_VigorBase):
     max_wall_clock_s: int = 1800
     max_cost_usd: float | None = None
     max_tool_retries: int = 2
+    parallel_candidates: int = Field(default=1, ge=1)
 
 
 class TaskSpec(_VigorBase):

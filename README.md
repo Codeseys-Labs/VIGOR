@@ -106,6 +106,7 @@ uv run pytest
 | Runtime skeleton | shipped |
 | Patch loop | shipped |
 | Sequential best-of-N | shipped |
+| Parallel best-of-N | shipped: opt-in via `Budgets.parallel_candidates` (ADR-0034) |
 | Photo adapter | shipped: globals, heuristic masks, local rendering, histogram critic, JSON/XMP/mask exports |
 | Video adapter | shipped: standalone Manim adapter with fake-runner tests; real Manim optional |
 | CAD adapter | shipped: OpenSCAD source generation + pure-Python validators |

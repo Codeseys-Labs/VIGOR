@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from vigor_core.archive import RunArchive
 from vigor_core.errors import VigorError
 from vigor_core.interfaces import (
@@ -626,6 +629,350 @@ async def test_orchestrator_default_backend_reports_zero_usage(tmp_path: Path) -
     assert result.usage.input_tokens == 0
     assert result.usage.output_tokens == 0
     assert result.usage.usd is None
+
+
+class _CounterBackend(AgentBackend):
+    """Backend whose ``generate`` is deterministic *per call* via a counter.
+
+    Under parallel fanout every coroutine in a chunk sees the same
+    ``prior_candidates`` snapshot, so any backend that derives content
+    from ``len(prior_candidates)`` collapses to identical bodies. This
+    backend instead tracks a monotonic counter that increments as each
+    ``generate`` coroutine *completes*, giving each call a distinct body
+    and a recorded completion order.
+
+    Optional ``per_call_delay_factory(call_index) -> float`` lets tests
+    inject submission-order-vs-completion-order skew (slot 0 sleeps
+    longest → completes last under real fanout).
+    """
+
+    def __init__(
+        self,
+        *,
+        per_call_delay_factory: Callable[[int], float] | None = None,
+    ) -> None:
+        self._counter = 0
+        self._submit_counter = 0
+        self._per_call_delay = per_call_delay_factory
+        self.completion_order: list[str] = []
+        self.in_flight = 0
+        self.peak_in_flight = 0
+        self.task_id_observed: str | None = None
+
+    async def generate(self, request: GenerationRequest) -> GenerationResult:
+        # Submission order is captured *before* the first await; every
+        # coroutine in a parallel chunk sees the same prior_candidates
+        # snapshot, so we cannot use that for ordering — use our own
+        # synchronous counter that increments at entry, before yielding.
+        submit_index = self._submit_counter
+        self._submit_counter += 1
+        self.in_flight += 1
+        self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+        try:
+            if self._per_call_delay is not None:
+                await asyncio.sleep(self._per_call_delay(submit_index))
+            self._counter += 1
+            seq = self._counter
+            ir = ArtifactIR(
+                # Backend assigns its own (intentionally unstable) id; the
+                # orchestrator re-stamps via slot index post-gather.
+                candidate_id=f"raw_{request.task.task_id}_{seq:04d}",
+                ir_type=request.plan.ir_type,
+                body={"text": f"candidate seq={seq}", "seq": seq},
+            )
+            self.task_id_observed = request.task.task_id
+            self.completion_order.append(f"submit{submit_index:04d}_seq{seq:04d}")
+            return GenerationResult(ir=ir)
+        finally:
+            self.in_flight -= 1
+
+    async def review(self, request: ReviewRequest) -> ReviewResult:
+        seq = float(request.ir.body.get("seq", 0))
+        return ReviewResult(
+            report=ReviewReport(
+                review_id=f"rev_seq_{request.ir.candidate_id}",
+                candidate_id=request.ir.candidate_id,
+                artifact_id=request.artifact.artifact_id,
+                reviewer_id=request.reviewer_id,
+                reviewer_type="model_critic",
+                summary=f"seq score {seq}",
+                # Normalize so the highest-seq candidate wins on composite.
+                scores={"quality": min(1.0, seq / 10.0)},
+                passed=True,
+                recommended_action="accept",
+            )
+        )
+
+    async def propose_patch(self, request: PatchProposalRequest) -> PatchProposal:
+        return PatchProposal(
+            patch=PatchPlan(
+                patch_id=f"patch_{request.ir.candidate_id}",
+                source_candidate_id=request.ir.candidate_id,
+                objectives=["noop"],
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_parallel_candidates_default_one_preserves_sequential_order(
+    tmp_path: Path,
+) -> None:
+    """Default ``parallel_candidates=1`` is byte-identical to the serial loop.
+
+    ADR-0034 commits to sequential equivalence under the default cap; this
+    asserts the candidate-id sequence and the per-candidate archive layout
+    match what the existing best-of-N test already exercises.
+    """
+
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=_RankedBackend(),
+        archive=archive,
+        policy=ScoringPolicy(policy_id="best", weights={"quality": 1.0}),
+    )
+    task = TaskSpec(
+        task_id="t_par_default",
+        goal="pick best",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=3),  # parallel_candidates omitted
+    )
+    result = await orchestrator.run(task)
+
+    assert task.budgets.parallel_candidates == 1
+    assert result.accepted is True
+    assert result.selected_candidate_id == "cand_t_par_default_0002"
+    candidate_dirs = sorted((archive.run_dir("t_par_default") / "candidates").iterdir())
+    assert [d.name for d in candidate_dirs] == [
+        "cand_t_par_default_0000",
+        "cand_t_par_default_0001",
+        "cand_t_par_default_0002",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_candidates_four_writes_all_artifacts(tmp_path: Path) -> None:
+    """``parallel_candidates=4`` materializes all four candidate JSONs."""
+
+    archive = RunArchive(tmp_path)
+    backend = _CounterBackend()
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=backend,
+        archive=archive,
+        policy=ScoringPolicy(
+            policy_id="best", weights={"quality": 1.0}, disagreement_threshold=1.0
+        ),
+    )
+    task = TaskSpec(
+        task_id="t_par_four",
+        goal="pick best",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=4, parallel_candidates=4),
+    )
+    result = await orchestrator.run(task)
+
+    assert result.accepted is True
+    candidate_dirs = sorted((archive.run_dir("t_par_four") / "candidates").iterdir())
+    # Orchestrator re-stamps IDs by slot index, so directory names are
+    # deterministic even though the backend's internal IDs (``raw_…``)
+    # are not. ADR-0034 §Negative §2 — stable ids, nondeterministic write
+    # order. Sorting by name is the documented test pattern.
+    assert [d.name for d in candidate_dirs] == [
+        "cand_t_par_four_0000",
+        "cand_t_par_four_0001",
+        "cand_t_par_four_0002",
+        "cand_t_par_four_0003",
+    ]
+    for cand_dir in candidate_dirs:
+        assert (cand_dir / "ir.json").exists()
+        assert (cand_dir / "compile_result.json").exists()
+        assert (cand_dir / "adjudication.json").exists()
+        assert any((cand_dir / "reviews").glob("*.json"))
+
+
+@pytest.mark.asyncio
+async def test_parallel_candidates_actually_fans_out(tmp_path: Path) -> None:
+    """Submission and completion order diverge under real ``asyncio.gather``."""
+
+    archive = RunArchive(tmp_path)
+    # Earlier-submitted slots take longer to complete than later-submitted
+    # slots. Under a serial loop, completion order matches submission order
+    # (slot 0 first, slot 3 last). Under real fanout the order *inverts* —
+    # slot 0 sleeps longest and completes last while slot 3 finishes first.
+    # peak_in_flight directly observes that multiple coroutines are awaiting
+    # concurrently inside the same gather batch.
+    backend = _CounterBackend(per_call_delay_factory=lambda i: 0.02 * max(0, 4 - i))
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=backend,
+        archive=archive,
+        policy=ScoringPolicy(
+            policy_id="best", weights={"quality": 1.0}, disagreement_threshold=1.0
+        ),
+    )
+    task = TaskSpec(
+        task_id="t_par_fanout",
+        goal="pick best",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=4, parallel_candidates=4),
+    )
+    await orchestrator.run(task)
+
+    assert backend.peak_in_flight == 4, "all four generate calls must overlap"
+    # First completion is submit-3 (shortest delay); last is submit-0 (longest).
+    # That inversion is the unforgeable signal that gather is real fanout.
+    assert backend.completion_order[0].startswith("submit0003_")
+    assert backend.completion_order[-1].startswith("submit0000_")
+
+
+@pytest.mark.asyncio
+async def test_parallel_candidates_chunked_below_max(tmp_path: Path) -> None:
+    """``parallel_candidates < max_candidates`` chunks the fanout."""
+
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=_RankedBackend(),
+        archive=archive,
+        policy=ScoringPolicy(policy_id="best", weights={"quality": 1.0}),
+    )
+    task = TaskSpec(
+        task_id="t_par_chunk",
+        goal="pick best",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=5, parallel_candidates=2),
+    )
+    result = await orchestrator.run(task)
+
+    assert result.accepted is True
+    candidate_dirs = sorted((archive.run_dir("t_par_chunk") / "candidates").iterdir())
+    # Five candidates, three chunks of (2, 2, 1). All five must materialize.
+    assert [d.name for d in candidate_dirs] == [f"cand_t_par_chunk_{i:04d}" for i in range(5)]
+
+
+class _ExplodingEvaluateAdapter(ToyTextAdapter):
+    """Adapter that raises a bare ``RuntimeError`` from ``validate_ir``.
+
+    ``_evaluate_candidate`` does NOT catch arbitrary exceptions from
+    ``validate_ir`` — only from ``compile`` and ``review``. So a
+    ``RuntimeError`` from ``validate_ir`` is exactly the escape path
+    ``return_exceptions=True`` is meant to cover.
+    """
+
+    async def validate_ir(self, ir):  # type: ignore[no-untyped-def]
+        raise RuntimeError(f"validate exploded for {ir.candidate_id}")
+
+
+@pytest.mark.asyncio
+async def test_escaped_exception_becomes_failure_outcome(tmp_path: Path) -> None:
+    """An exception escaping ``_evaluate_candidate`` is wrapped, not raised.
+
+    ADR-0034 §Decision Outcome paragraph on failure handling: gather
+    catches stray exceptions; the orchestrator coerces them into a
+    failure-shaped CandidateOutcome and the iteration continues.
+    """
+
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=_ExplodingEvaluateAdapter(),
+        backend=_RankedBackend(),
+        archive=archive,
+    )
+    task = TaskSpec(
+        task_id="t_escape",
+        goal="pick best",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=2, parallel_candidates=2),
+    )
+    result = await orchestrator.run(task)
+
+    # Both candidates fail (no acceptance), but the run completes without
+    # raising — the iteration drains via the failure adjudication path.
+    assert result.accepted is False
+    errors_dir = archive.run_dir("t_escape") / "errors"
+    error_files = list(errors_dir.glob("err_evaluate_*.json"))
+    assert len(error_files) == 2  # one per slot
+    payload = json.loads(error_files[0].read_text())
+    assert "RuntimeError" in payload["message"]
+
+
+class _ExplodingFirstCallBackend(_CounterBackend):
+    """Counter-based backend whose first ``generate`` call raises.
+
+    Unlike a backend that branches on ``len(prior_candidates)``, this one
+    branches on its own call counter. Under parallel fanout every
+    coroutine in a chunk starts with the same ``prior_candidates``
+    snapshot, so prior-based branching would either explode every slot
+    or no slot at all. The call-order counter is the right discriminator
+    for this test (the orchestrator's per-slot ID re-stamp lives at the
+    *post-gather* boundary, so slot identity is preserved).
+    """
+
+    async def generate(self, request: GenerationRequest) -> GenerationResult:
+        self._counter += 1
+        seq = self._counter
+        if seq == 1:
+            raise RuntimeError(f"generate exploded for call {seq}")
+        ir = ArtifactIR(
+            candidate_id=f"raw_{request.task.task_id}_{seq:04d}",
+            ir_type=request.plan.ir_type,
+            body={"text": f"candidate seq={seq}", "seq": seq},
+        )
+        return GenerationResult(ir=ir)
+
+
+@pytest.mark.asyncio
+async def test_parallel_generation_exception_drops_one_slot(tmp_path: Path) -> None:
+    """An exception in one parallel ``generate`` call drops only that slot.
+
+    The exploding call increments the backend counter to 1; the other
+    two calls in the same chunk return successfully. The orchestrator
+    coerces the gathered ``BaseException`` into an archive error record
+    and keeps only the survivors. The returned slot indices are
+    contiguous from the *front* (the first slot is dropped).
+    """
+
+    archive = RunArchive(tmp_path)
+    orchestrator = Orchestrator(
+        adapter=ToyTextAdapter(),
+        backend=_ExplodingFirstCallBackend(),
+        archive=archive,
+        policy=ScoringPolicy(
+            policy_id="best", weights={"quality": 1.0}, disagreement_threshold=1.0
+        ),
+    )
+    task = TaskSpec(
+        task_id="t_gen_explode",
+        goal="pick best",
+        modalities=["toy_text"],
+        budgets=Budgets(max_iterations=1, max_candidates=3, parallel_candidates=3),
+    )
+    result = await orchestrator.run(task)
+
+    # Whichever slot landed the exploding call lost its candidate dir.
+    # The other two survivors got slot indices from the global numbering;
+    # because gather preserves submission order in the result list, the
+    # explosion lands on whichever slot was scheduled first by the loop —
+    # we don't pin that ordering, but we *do* require that exactly two
+    # candidate directories materialize.
+    candidate_dirs = sorted((archive.run_dir("t_gen_explode") / "candidates").iterdir())
+    assert len(candidate_dirs) == 2
+    error_files = list((archive.run_dir("t_gen_explode") / "errors").glob("err_generate_*.json"))
+    assert len(error_files) == 1
+    payload = json.loads(error_files[0].read_text())
+    assert "RuntimeError" in payload["message"]
+    # The surviving candidates' adjudications still resolve; the run
+    # accepts because nothing is failing.
+    assert result.accepted is True
+
+
+@pytest.mark.asyncio
+async def test_parallel_candidates_must_be_at_least_one() -> None:
+    """``Budgets.parallel_candidates`` rejects values below 1 at validation."""
+
+    with pytest.raises(ValidationError):
+        Budgets(parallel_candidates=0)
 
 
 @pytest.mark.asyncio

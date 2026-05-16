@@ -138,12 +138,22 @@ class Orchestrator:
                 candidates = await self._candidate_batch(task, plan, prior, current_ir, activities)
                 current_ir = None
                 outcomes: list[CandidateOutcome] = []
-                for ir in candidates:
-                    outcome = await self._evaluate_candidate(ir, context, activities)
-                    outcomes.append(outcome)
-                    adjudications.append(outcome.adjudication)
-                    prior.append(ir)
-                    last_candidate_id = ir.candidate_id
+                # ADR-0034: chunked asyncio.gather fanout. Default
+                # parallel_candidates=1 → chunks of size 1 (byte-identical to
+                # the legacy serial loop); operators raise the cap to opt in.
+                eval_chunk = min(max(1, task.budgets.parallel_candidates), max(1, len(candidates)))
+                for chunk_start in range(0, len(candidates), eval_chunk):
+                    chunk = candidates[chunk_start : chunk_start + eval_chunk]
+                    gathered = await asyncio.gather(
+                        *(self._evaluate_candidate(ir, context, activities) for ir in chunk),
+                        return_exceptions=True,
+                    )
+                    for ir, item in zip(chunk, gathered, strict=True):
+                        outcome = self._coerce_outcome(ir, item, run_id)
+                        outcomes.append(outcome)
+                        adjudications.append(outcome.adjudication)
+                        prior.append(ir)
+                        last_candidate_id = ir.candidate_id
 
                 accepted_outcome = self._select_accepted_outcome(outcomes)
                 if accepted_outcome is not None:
@@ -280,19 +290,59 @@ class Orchestrator:
     ) -> list[ArtifactIR]:
         if current_ir is not None:
             return [current_ir]
+        total = max(1, task.budgets.max_candidates)
+        # ADR-0034: chunked fanout under parallel_candidates cap. Default
+        # cap=1 reproduces the legacy serial loop (one-at-a-time generate
+        # with a growing prior_candidates list). Higher caps fan out a
+        # batch under asyncio.gather; the per-call ``prior_candidates``
+        # snapshot is the same for every member of a batch, so we re-stamp
+        # candidate IDs by global slot index *after* the gather returns.
+        gen_chunk = min(max(1, task.budgets.parallel_candidates), total)
         generated: list[ArtifactIR] = []
-        for _ in range(max(1, task.budgets.max_candidates)):
-            result = await self._backend.generate(
-                GenerationRequest(task=task, plan=plan, prior_candidates=[*prior, *generated])
+        for chunk_start in range(0, total, gen_chunk):
+            chunk_size = min(gen_chunk, total - chunk_start)
+            snapshot = [*prior, *generated]
+            requests = [
+                GenerationRequest(task=task, plan=plan, prior_candidates=snapshot)
+                for _ in range(chunk_size)
+            ]
+            results = await asyncio.gather(
+                *(self._backend.generate(req) for req in requests),
+                return_exceptions=True,
             )
-            generated.append(result.ir)
-            activities.append(
-                ProvenanceActivity(
-                    activity_id=f"generate_{result.ir.candidate_id}",
-                    type="generation",
-                    agent="backend",
+            for slot_offset, item in enumerate(results):
+                slot = chunk_start + slot_offset
+                if isinstance(item, BaseException):
+                    self._archive.write_error(
+                        task.task_id,
+                        RuntimeErrorRecord(
+                            error_id=f"err_generate_{task.task_id}_{slot:04d}",
+                            type="generic",
+                            severity="high",
+                            message=f"backend.generate raised {type(item).__name__}: {item}",
+                            retryable=False,
+                        ),
+                    )
+                    continue
+                ir = item.ir
+                # Re-stamp IDs by global slot to preserve sequential
+                # determinism even under parallel fanout (ADR-0034
+                # §Negative §2: "stable IDs, the index is computed before
+                # fanout"). Backends compute `cand_<task>_<NNNN>` from
+                # `len(prior_candidates)` which is constant within a
+                # chunk — without this rewrite a chunk of 4 would all
+                # claim slot 0000 and collide on archive paths.
+                expected_id = f"cand_{task.task_id}_{slot:04d}"
+                if ir.candidate_id != expected_id:
+                    ir = ir.model_copy(update={"candidate_id": expected_id})
+                generated.append(ir)
+                activities.append(
+                    ProvenanceActivity(
+                        activity_id=f"generate_{ir.candidate_id}",
+                        type="generation",
+                        agent="backend",
+                    )
                 )
-            )
         return generated
 
     async def _evaluate_candidate(
@@ -530,6 +580,44 @@ class Orchestrator:
         )
         _ = compile_result
         return adapter_reviews_result + backend_reviews_result
+
+    def _coerce_outcome(
+        self,
+        ir: ArtifactIR,
+        item: CandidateOutcome | BaseException,
+        run_id: str,
+    ) -> CandidateOutcome:
+        """Wrap an escaped exception from gather() into a failure outcome.
+
+        ``_evaluate_candidate`` already converts every documented per-
+        candidate error into a failure-shaped ``CandidateOutcome`` (see
+        ADR-0034 §Decision Outcome). ``return_exceptions=True`` is the
+        defense-in-depth net for *anything* that escapes — runtime
+        regressions, unexpected ``BaseException`` subclasses, etc.
+        """
+
+        if not isinstance(item, BaseException):
+            return item
+        message = f"_evaluate_candidate raised {type(item).__name__}: {item}"
+        err = RuntimeErrorRecord(
+            error_id=f"err_evaluate_{ir.candidate_id}",
+            type="generic",
+            severity="high",
+            message=message,
+            retryable=False,
+        )
+        self._archive.write_error(run_id, err)
+        compile_result = CompileResult(
+            compile_id=f"compile_evaluate_{ir.candidate_id}_error",
+            candidate_id=ir.candidate_id,
+            tool_id="orchestrator.evaluate",
+            status="failure",
+            errors=[err],
+        )
+        self._archive.write_compile_result(run_id, compile_result)
+        adj = self._failure_adjudication(ir.candidate_id, message)
+        self._archive.write_adjudication(run_id, adj)
+        return CandidateOutcome(ir, compile_result, None, [], adj)
 
     def _failure_adjudication(self, candidate_id: str, reason: str) -> AdjudicationReport:
         return AdjudicationReport(
