@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from vigor_core.agent_config import MCPServerSpec
+from vigor_core.errors import VigorError
 from vigor_mcp.backend import MCPBackendError, MCPToolBackend
 
 
@@ -302,9 +303,7 @@ async def test_call_tool_mutator_denied_with_empty_capability() -> None:
 
     opener = _mutator_opener()
     backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener)
-    result = await backend.call_tool(
-        "mcp.alpha.write", {"data": "x"}, capabilities=frozenset()
-    )
+    result = await backend.call_tool("mcp.alpha.write", {"data": "x"}, capabilities=frozenset())
     assert result.status == "failure"
     assert "requires capability grant" in (result.error or "")
     await backend.aclose()
@@ -388,3 +387,279 @@ async def test_ensure_open_rolls_back_on_failure() -> None:
     assert session is succeeded["alpha"]
     assert handle.session is session
     await backend.aclose()
+
+
+# --- VIGOR-2585: Budgets.max_tool_retries retry loop ---
+
+
+class _FlakyCallSession:
+    """Session that fails the first ``fail_n`` call_tool attempts then succeeds."""
+
+    def __init__(self, fail_n: int, exc: BaseException) -> None:
+        self._fail_n = fail_n
+        self._exc = exc
+        self.call_log: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def list_tools(self) -> _FakeListResult:
+        return _FakeListResult(tools=[_FakeTool(name="echo")])
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> _FakeCallResult:
+        self.call_log.append((name, arguments))
+        if len(self.call_log) <= self._fail_n:
+            raise self._exc
+        return _FakeCallResult(content=[_FakeContentBlock(text="ok")])
+
+
+@pytest.mark.asyncio
+async def test_call_tool_default_no_retry_preserves_legacy_behavior() -> None:
+    """No retries by default — direct construction matches the pre-VIGOR-2585 surface."""
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    session = _FlakyCallSession(fail_n=1, exc=RuntimeError("network blip"))
+    opens: list[str] = []
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _FlakyCallSession:
+        opens.append(spec.server_id)
+        return session
+
+    backend = MCPToolBackend([_stdio_spec("alpha")], session_opener=opener, sleep=_fake_sleep)
+    result = await backend.call_tool("mcp.alpha.echo", {})
+    assert result.status == "failure"
+    assert sleeps == []  # no retry, no backoff sleep
+    assert len(session.call_log) == 1
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_retries_transient_runtime_error_then_succeeds() -> None:
+    """A RuntimeError mid-call retries up to max_tool_retries before succeeding."""
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    session = _FlakyCallSession(fail_n=2, exc=RuntimeError("network blip"))
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _FlakyCallSession:
+        return session
+
+    backend = MCPToolBackend(
+        [_stdio_spec("alpha")],
+        session_opener=opener,
+        max_tool_retries=2,
+        retry_base_delay_s=0.5,
+        sleep=_fake_sleep,
+    )
+    result = await backend.call_tool("mcp.alpha.echo", {})
+    assert result.status == "success"
+    # 1 initial + 2 retries = 3 calls; 2 sleeps with exponential backoff.
+    assert len(session.call_log) == 3
+    assert sleeps == [0.5, 1.0]
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_retries_exhausted_returns_last_failure() -> None:
+    """When all retries exhaust, the final failure is returned (not raised)."""
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    session = _FlakyCallSession(fail_n=10, exc=RuntimeError("permanent blip"))
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _FlakyCallSession:
+        return session
+
+    backend = MCPToolBackend(
+        [_stdio_spec("alpha")],
+        session_opener=opener,
+        max_tool_retries=2,
+        retry_base_delay_s=0.0,
+        sleep=_fake_sleep,
+    )
+    result = await backend.call_tool("mcp.alpha.echo", {})
+    assert result.status == "failure"
+    assert "permanent blip" in (result.error or "")
+    # 1 initial + 2 retries = 3 attempts.
+    assert len(session.call_log) == 3
+    # 2 sleeps between the 3 attempts (no sleep after the final attempt).
+    assert len(sleeps) == 2
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_retries_timeout() -> None:
+    """asyncio.TimeoutError is retryable (transient by definition)."""
+
+    class _AlwaysSlowSession:
+        async def list_tools(self) -> _FakeListResult:
+            return _FakeListResult(tools=[_FakeTool(name="echo")])
+
+        async def call_tool(
+            self, name: str, arguments: dict[str, Any] | None = None
+        ) -> _FakeCallResult:
+            import asyncio as _aio
+
+            await _aio.sleep(2.0)
+            return _FakeCallResult()
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    opens: list[str] = []
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _AlwaysSlowSession:
+        opens.append(spec.server_id)
+        return _AlwaysSlowSession()
+
+    spec = MCPServerSpec(
+        server_id="alpha",
+        transport="stdio",
+        command=["x"],
+        timeout_s=1,
+    )
+    backend = MCPToolBackend(
+        [spec],
+        session_opener=opener,
+        max_tool_retries=2,
+        retry_base_delay_s=0.0,
+        sleep=_fake_sleep,
+    )
+    result = await backend.call_tool("mcp.alpha.echo", {})
+    assert result.status == "timeout"
+    # Each timeout tears down the session, so opens grow per attempt.
+    assert len(opens) == 3
+    # Two backoff sleeps between the three attempts.
+    assert len(sleeps) == 2
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_does_not_retry_non_retryable_vigor_error() -> None:
+    """A VigorError with retryable=False fails after the initial attempt."""
+
+    class _NonRetryableError(VigorError):
+        kind = "schema_validation"
+        retryable = False
+
+    session = _FlakyCallSession(fail_n=10, exc=_NonRetryableError("bad schema"))
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _FlakyCallSession:
+        return session
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    backend = MCPToolBackend(
+        [_stdio_spec("alpha")],
+        session_opener=opener,
+        max_tool_retries=3,
+        retry_base_delay_s=0.0,
+        sleep=_fake_sleep,
+    )
+    result = await backend.call_tool("mcp.alpha.echo", {})
+    assert result.status == "failure"
+    assert "bad schema" in (result.error or "")
+    # No retries: a single attempt.
+    assert len(session.call_log) == 1
+    assert sleeps == []
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_retries_retryable_vigor_error() -> None:
+    """A VigorError with retryable=True triggers the retry loop."""
+
+    class _RetryableError(VigorError):
+        kind = "tool_timeout"
+        retryable = True
+
+    session = _FlakyCallSession(fail_n=1, exc=_RetryableError("transient"))
+
+    async def opener(spec: MCPServerSpec, stack: AsyncExitStack) -> _FlakyCallSession:
+        return session
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    backend = MCPToolBackend(
+        [_stdio_spec("alpha")],
+        session_opener=opener,
+        max_tool_retries=2,
+        retry_base_delay_s=0.0,
+        sleep=_fake_sleep,
+    )
+    result = await backend.call_tool("mcp.alpha.echo", {})
+    assert result.status == "success"
+    assert len(session.call_log) == 2
+    assert len(sleeps) == 1
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_does_not_retry_application_iserror() -> None:
+    """isError=True is an application outcome, not a transient — no retry."""
+
+    opener = _OpenerFactory()
+    backend = MCPToolBackend(
+        [_stdio_spec("alpha")],
+        session_opener=opener,
+        max_tool_retries=3,
+    )
+    result = await backend.call_tool("mcp.alpha.boom", {})
+    assert result.status == "failure"
+    # Single dispatch: no retry on isError.
+    assert opener.sessions["alpha"].call_log == [("boom", {})]
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_does_not_retry_denied_calls() -> None:
+    """Allowlist / capability denials short-circuit before the retry loop."""
+
+    opener = _OpenerFactory()
+    spec = MCPServerSpec(
+        server_id="alpha",
+        transport="stdio",
+        command=["x"],
+        tool_allowlist=["echo"],
+    )
+    backend = MCPToolBackend([spec], session_opener=opener, max_tool_retries=5)
+    blocked = await backend.call_tool("mcp.alpha.reverse", {})
+    assert blocked.status == "failure"
+    # Server was never invoked; gate fired before dispatch.
+    assert opener.sessions.get("alpha") is None or opener.sessions["alpha"].call_log == []
+    await backend.aclose()
+
+
+def test_call_tool_rejects_negative_max_tool_retries() -> None:
+    with pytest.raises(ValueError, match="max_tool_retries"):
+        MCPToolBackend(
+            [_stdio_spec("alpha")],
+            session_opener=_OpenerFactory(),
+            max_tool_retries=-1,
+        )
+
+
+def test_call_tool_rejects_negative_base_delay() -> None:
+    with pytest.raises(ValueError, match="retry_base_delay_s"):
+        MCPToolBackend(
+            [_stdio_spec("alpha")],
+            session_opener=_OpenerFactory(),
+            retry_base_delay_s=-0.1,
+        )

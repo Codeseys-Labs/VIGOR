@@ -50,8 +50,13 @@ class _FakeListResult:
 
 
 class _Session:
-    def __init__(self, *, tools: list[_FakeTool], call_result: _FakeCallResult | None = None,
-                 raise_call: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tools: list[_FakeTool],
+        call_result: _FakeCallResult | None = None,
+        raise_call: BaseException | None = None,
+    ) -> None:
         self._tools = tools
         self._call_result = call_result or _FakeCallResult(content=[_FakeContentBlock(text="ok")])
         self._raise_call = raise_call
@@ -308,6 +313,57 @@ async def test_no_audit_when_no_sink_configured() -> None:
     # Must work without actor/run_id/sink.
     result = await backend.call_tool("mcp.alpha.echo", {})
     assert result.status == "success"
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_audit_event_collapsed_across_retries() -> None:
+    """Retries (VIGOR-2585) emit ONE audit event per logical call_tool, not per attempt.
+
+    The sink-owned hash chain (mx-0eae76) treats each emit() as a logical
+    call boundary; per-attempt audit would corrupt the chain semantics
+    that test_audit_events_chain_across_calls relies on.
+    """
+
+    class _RetryThenSucceed:
+        def __init__(self) -> None:
+            self.call_log: list[tuple[str, dict[str, Any] | None]] = []
+
+        async def list_tools(self) -> _FakeListResult:
+            return _FakeListResult(tools=[_FakeTool(name="echo")])
+
+        async def call_tool(
+            self, name: str, arguments: dict[str, Any] | None = None
+        ) -> _FakeCallResult:
+            self.call_log.append((name, arguments))
+            if len(self.call_log) < 3:
+                raise RuntimeError("transient")
+            return _FakeCallResult(content=[_FakeContentBlock(text="ok")])
+
+    sink = InMemoryAuditSink()
+    session = _RetryThenSucceed()
+
+    async def _no_sleep(_delay: float) -> None:
+        return None
+
+    backend = MCPToolBackend(
+        [_spec()],
+        session_opener=_opener(session),  # type: ignore[arg-type]
+        audit_sink=sink,
+        actor="agent.demo",
+        run_id="run_1",
+        max_tool_retries=3,
+        retry_base_delay_s=0.0,
+        sleep=_no_sleep,
+    )
+    result = await backend.call_tool("mcp.alpha.echo", {"x": 1})
+    assert result.status == "success"
+    assert len(session.call_log) == 3
+
+    events = sink.events()
+    # Exactly one audit event for the logical call (final outcome).
+    assert len(events) == 1
+    assert events[0].outcome == "success"
     await backend.aclose()
 
 

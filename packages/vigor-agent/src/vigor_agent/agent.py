@@ -65,10 +65,20 @@ class AgentOrchestrator:
         self._registry = AdapterRegistry.from_config(self._config)
         self._router = Router(self._config.routing, self._registry)
         self._archive = RunArchive(Path(self._config.archive_dir))
+        # The MCP-backed tool backend is constructed once per agent (long-
+        # lived sessions amortize subprocess + handshake cost), so per-task
+        # ``Budgets.max_tool_retries`` cannot be threaded in lazily — we
+        # resolve it now from the agent-level ``AgentConfig.budgets`` and
+        # rely on operators tuning the agent config for retry-sensitive
+        # workloads. Per-task overrides would require a runtime setter and
+        # are out of scope for VIGOR-2585.
         self._tool_backend = (
             tool_backend
             if tool_backend is not None
-            else self._build_tool_backend(self._config.mcp_servers)
+            else self._build_tool_backend(
+                self._config.mcp_servers,
+                max_tool_retries=self._config.budgets.max_tool_retries,
+            )
         )
         # ADR-0037: optional observer threaded into every per-run Orchestrator.
         self._observer = observer
@@ -100,7 +110,11 @@ class AgentOrchestrator:
         return specs
 
     @staticmethod
-    def _build_tool_backend(specs: list[MCPServerSpec]) -> ToolBackend | None:
+    def _build_tool_backend(
+        specs: list[MCPServerSpec],
+        *,
+        max_tool_retries: int,
+    ) -> ToolBackend | None:
         if not specs:
             return None
         try:
@@ -110,7 +124,7 @@ class AgentOrchestrator:
                 "AgentConfig declares mcp_servers but vigor-mcp is not installed; "
                 "install with the [mcp] extra"
             ) from exc
-        return MCPToolBackend.from_specs(specs)
+        return MCPToolBackend.from_specs(specs, max_tool_retries=max_tool_retries)
 
     @property
     def archive(self) -> RunArchive:
