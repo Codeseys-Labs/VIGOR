@@ -49,3 +49,21 @@ class HarnessEvalReport(_HarnessBase):
     accept_rate: float
     mean_composite: float | None = None
     regressions: list[str] = Field(default_factory=list)
+
+
+class HarnessComparison(_HarnessBase):
+    schema_version: Literal["vigor.harness_comparison.v1"] = "vigor.harness_comparison.v1"
+    comparison_id: str
+    created_at: str = Field(default_factory=utcnow_iso)
+    a_candidate_id: str
+    b_candidate_id: str
+    split_id: str
+    n_paired_tasks: int
+    wins: int
+    losses: int
+    ties: int
+    delta_composite: float | None = None
+    delta_composite_ci_low: float | None = None
+    delta_composite_ci_high: float | None = None
+    mcnemar_p: float | None = None
+    regressed_task_ids: list[str] = Field(default_factory=list)
